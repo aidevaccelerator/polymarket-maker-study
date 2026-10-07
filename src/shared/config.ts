@@ -14,7 +14,16 @@ export const ALLOWED_CATEGORIES = ['Politics', 'Finance', 'Economics'] as const;
 export const PESSIMISTIC_FAIL_MARKOUT_CENTS = 1.3;
 export const MEDIAN_FAIL_MARKOUT_CENTS = 2.0;
 export const TAKER_SHARE_FLOOR = 0.5;
+// EXPLANATORY ONLY — this constant does not gate any verdict. No PASS, FAIL,
+// MARGINAL, FAIL_TAKER_SHARE or INSUFFICIENT_DATA outcome depends on it. It
+// appears only inside the reason string emitted when the taker-share rule fires
+// (src/analysis/verdict.ts:167). See docs/THRESHOLDS.md "Constants that gate nothing".
 export const GROSS_EDGE_BPS = 250; // 2.5%
+
+// EXPLANATORY ONLY, same as GROSS_EDGE_BPS above — it does not gate any verdict
+// and is compared against nothing. It appears only inside the reason string
+// emitted when the taker-share rule fires (src/analysis/verdict.ts:167).
+// See docs/THRESHOLDS.md "Constants that gate nothing".
 export const ADVERSE_SELECTION_BUDGET_CENTS = 1.3;
 
 // ---- Quantization parameters (promoted from src/analysis on 2026-10-07) ----
