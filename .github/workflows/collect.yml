@@ -1,0 +1,104 @@
+# Collector — the 24/7 recorder.
+#
+# Why a self-hosted runner: GitHub-hosted runners carry a per-minute quota and a
+# 6-hour job cap, which is fatal for a continuous recorder. Self-hosted runners
+# have NO minute quota and NO 6-hour cap (jobs may run up to 5 days), which is
+# the entire reason recording happens here. See docs/SECURITY.md for the trust
+# model this imposes on a PUBLIC repo.
+#
+# This is a READ-ONLY recorder. It consumes Polymarket's public market-data feed
+# and never authenticates, signs, or places anything.
+#
+# Trust boundary: triggers are limited to push-to-default-branch, schedule, and
+# workflow_dispatch. There is deliberately NO `pull_request` or
+# `pull_request_target` trigger — on a public repo those would let fork PRs run
+# code on the self-hosted machine.
+
+name: Collector (24/7 recorder)
+
+on:
+  # Manual start. To STOP recording, cancel the active run in the Actions UI
+  # (or `gh run cancel`). This dispatch only starts new runs.
+  workflow_dispatch:
+
+  # Daily watchdog: if the recorder stopped (crash, 5-day cap, or manual stop),
+  # the next midnight restart brings it back. While the recorder is already
+  # running, this simply queues behind the concurrency lock and can be ignored.
+  schedule:
+    - cron: '0 0 * * *' # 00:00 UTC daily
+
+  # Redeploy on merge to the default branch. While a run is active this queues;
+  # cancel the active run first to start the new build immediately.
+  push:
+    branches: [ main ]
+
+# One recorder at a time. cancel-in-progress is deliberately false so a watchdog
+# or push trigger never kills a healthy run mid-write; overlapping collectors
+# would double-record the same book snapshots.
+concurrency:
+  group: polymarket-collector
+  cancel-in-progress: false
+
+# Least-privilege. The recorder only needs to read the repo (checkout) and write
+# to its own local ./data. Artifact upload uses the runner's runtime token, not
+# the GITHUB_TOKEN, so no repo write scope is granted.
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: [self-hosted, polymarket-recorder]
+    # Self-hosted jobs may run up to 5 days (7200 minutes). The daily watchdog
+    # above restarts the recorder after this cap or any crash.
+    timeout-minutes: 7200
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Long-lived recorder with a heartbeat. The collector is started in the
+      # background; this step then prints a notice every 5 minutes so a stalled
+      # run is visible in the Actions UI, and propagates the collector's exit
+      # code so a crash fails the job loudly.
+      - name: Run recorder (heartbeat every 5 min)
+        shell: bash
+        run: |
+          mkdir -p data logs
+          node dist/collector/index.js > >(tee logs/collector.log) 2>&1 &
+          COLLECTOR_PID=$!
+          echo "[startup] recorder pid=${COLLECTOR_PID} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          while kill -0 "$COLLECTOR_PID" 2>/dev/null; do
+            echo "::notice title=collector-heartbeat::recorder alive, pid=${COLLECTOR_PID} @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            sleep 300
+          done
+          wait "$COLLECTOR_PID" || status=$?
+          status=${status:-0}
+          echo "[shutdown] recorder exited status=${status} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          exit "$status"
+
+      # Upload only the SMALL outputs (quality manifest, gaps, logs). The Parquet
+      # dataset is far too large for Actions artifacts and would waste quota, so
+      # it is NEVER uploaded here — the operator syncs ./data out-of-band with
+      # rsync/rclone (see README "Data layout").
+      - name: Upload quality manifest, gaps, and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: collector-artifacts
+          path: |
+            data/quality-manifest.json
+            data/gaps.jsonl
+            logs/
+          if-no-files-found: warn
+          retention-days: 30

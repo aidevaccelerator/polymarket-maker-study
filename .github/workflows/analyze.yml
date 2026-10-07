@@ -1,0 +1,74 @@
+# Analysis — nightly batch.
+#
+# Short, stateless, and cheap: runs on a GitHub-hosted runner (free), reads the
+# dataset that the operator synced out-of-band, and produces the report +
+# verdict. It MUST fail loudly when there is no data — a green build on an empty
+# dataset would be a lie.
+
+name: Analysis (nightly)
+
+on:
+  schedule:
+    - cron: '30 6 * * *' # 06:30 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polymarket-analysis
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Full-project tests, not the collector-scoped `npm test`. The collector
+      # half is scoped deliberately so the recorder path stays fast and
+      # independent; here we want every test, because the analysis half
+      # (9 test files) must actually execute in CI or a break in it can only
+      # surface locally. `test:all` builds first and then fails if the emitted
+      # test files do not cover every test source — see scripts/run-tests.mjs.
+      - name: 'Test (full project: shared + collector + analysis)'
+        run: npm run test:all
+
+      # Guard: refuse to produce an empty green build. The dataset is synced
+      # out-of-band by the operator (rsync/rclone to object storage, then into
+      # ./data on this runner). If ./data is empty, this fails loudly.
+      - name: Verify dataset present
+        shell: bash
+        run: |
+          if [ -z "$(find data -type f ! -name '.gitkeep' 2>/dev/null)" ]; then
+            echo "::error::No dataset found under ./data. Sync it out-of-band (rsync/rclone) before running analysis. Refusing to emit an empty report."
+            exit 1
+          fi
+          echo "dataset present: $(find data -type f ! -name '.gitkeep' 2>/dev/null | wc -l | tr -d ' ') files"
+
+      - name: Run analysis
+        run: npm run analyze
+
+      # The report + verdict must exist after a successful analysis; a missing
+      # report is treated as an error so a silently-empty run can't pass.
+      - name: Upload report + verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-report
+          path: reports/
+          if-no-files-found: error
+          retention-days: 90

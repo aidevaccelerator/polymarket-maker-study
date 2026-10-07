@@ -1,0 +1,33 @@
+# ---- Node.js ----
+node_modules/
+
+# ---- Build output ----
+dist/
+dist-*/
+*.tsbuildinfo
+
+# ---- Dataset: NOT committed ----
+# The Parquet dataset is large (tens of GB over 30+ days) and fully regenerable
+# from the public live feed. Committing it would bloat the repo and make every
+# clone unusable. It is synced out-of-band instead (rsync/rclone to object
+# storage); see README "Data layout". Nothing under ./data is version-controlled
+# except the placeholder that keeps the directory alive.
+data/*
+!data/.gitkeep
+
+# ---- Secrets ----
+# Never commit credentials. The collector is read-only and needs none, but the
+# pattern is here to stop an accidental commit if one is ever added.
+.env
+.env.*
+
+# ---- Analysis output ----
+# Regenerable from ./data by `npm run analyze`. Not source, not pre-registration.
+reports/
+
+# ---- Logs ----
+*.log
+
+# ---- OS cruft ----
+.DS_Store
+Thumbs.db

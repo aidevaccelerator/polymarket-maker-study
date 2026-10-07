@@ -1,0 +1,15 @@
+{
+  // Collector-scoped build program: the shared contract (src/shared) plus the
+  // collector (src/collector). `npm run build` and `npm test` use only this, so
+  // the recorder path stays fast and a problem in src/analysis cannot turn the
+  // collector's own build and tests red.
+  //
+  // compilerOptions are inherited verbatim from tsconfig.json, so both halves are
+  // compiled at identical strictness. `tsconfig.json` is the whole-project
+  // program used by `npm run build:all` / `npm run test:all`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src/shared", "src/collector"]
+}

@@ -1,0 +1,16 @@
+{
+  // Analysis-half build program: the shared contract plus src/analysis, at the same
+  // full strictness as the collector half (compilerOptions inherited verbatim), so
+  // the analysis pipeline can be built and tested on its own:
+  //   npx tsc -b tsconfig.analysis.json
+  //   node scripts/run-tests.mjs dist/analysis
+  //
+  // Output goes to the same dist/ tree, so `npm run analyze` works unchanged.
+  // Each program keeps its own build-info file; none is incremental, so a
+  // surviving build-info cannot suppress a re-emit (see tsconfig.json).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "dist/.tsbuildinfo.analysis"
+  },
+  "include": ["src/shared", "src/analysis"]
+}

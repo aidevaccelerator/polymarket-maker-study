@@ -1,0 +1,53 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+
+    "skipLibCheck": true,
+
+    // `incremental` is DELIBERATELY ABSENT, and this file is built with `tsc -b`
+    // (see the "build" scripts in package.json). Those two facts are one decision,
+    // not two:
+    //
+    // TypeScript's build mode validates that every expected output still exists
+    // ("Project is out of date because output file X does not exist") and
+    // re-emits what is missing — but ONLY on the non-incremental build-info path.
+    // With `incremental: true`, `tsc -b` reads the surviving .tsbuildinfo, decides
+    // the project is up to date, emits nothing, and skips that existence check
+    // entirely. That was exactly the silent-green bug it used to be:
+    //
+    //   npm run build:all && rm -rf dist/analysis && npm run test:all
+    //     -> "tests 27", exit 0, dist/analysis never re-created.
+    //
+    // A .tsbuildinfo that survives `rm -rf dist/analysis` is therefore a
+    // liability, not a cache. It is kept inside dist/ so that removing dist/
+    // removes it too, and the build is non-incremental so that a surviving
+    // one still cannot suppress a re-emit.
+    "tsBuildInfoFile": "dist/.tsbuildinfo.all",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}
