@@ -323,6 +323,91 @@ describe('BookPoller malformed-response rate limit', () => {
     assert.equal(recorded.touches.length, 1);
     const bookTs = recorded.touches[0]?.bookTs;
     assert.ok(bookTs !== undefined);
-    assert.ok(writtenTs.includes(bookTs), `bookTs ${bookTs} was never written`);
+    assert.equal(writtenTs.includes(bookTs), true, `bookTs ${bookTs} was never written`);
+  });
+});
+
+// The measured sweep cost. These pin the SHAPE and the COUNTING, never a
+// wall-clock value: duration is inherently timing-dependent, so asserting a
+// number here would be flaky. The injected-fetcher seam above keeps this
+// hermetic — no network, no timers.
+describe('BookPoller observed sweep cost', () => {
+  it('reports null before any sweep has run, never 0', () => {
+    const { poller } = harness();
+
+    // The dry-run / empty-universe / discovery-failure paths construct no poller
+    // and report null. A 0 would read as a healthy instantaneous sweep.
+    assert.equal(poller.sweepStats(), null, 'no sweep yet must be null, not a zero-length sweep');
+  });
+
+  it('counts exactly one completed sweep per pollAll', async () => {
+    const { poller, bodies } = harness();
+    bodies.push(GOOD_BODY);
+
+    assert.equal(poller.sweepStats(), null);
+    await poller.pollAll();
+    assert.equal(poller.sweepStats()?.sweeps, 1);
+    await poller.pollAll();
+    await poller.pollAll();
+    assert.equal(poller.sweepStats()?.sweeps, 3, 'one sweep per completed pass, not per market');
+  });
+
+  it('reports finite, non-negative durations with max >= mean', async () => {
+    const { poller, bodies } = harness();
+    bodies.push(GOOD_BODY, { ...GOOD_BODY, asks: [{ price: '0.53', size: '400' }] });
+
+    await poller.pollAll();
+    await poller.pollAll();
+
+    const stats = poller.sweepStats();
+    assert.ok(stats !== null);
+    assert.ok(Number.isFinite(stats.meanMs), `meanMs must be finite, got ${stats.meanMs}`);
+    assert.ok(Number.isFinite(stats.maxMs), `maxMs must be finite, got ${stats.maxMs}`);
+    assert.ok(stats.meanMs >= 0, `meanMs must be non-negative, got ${stats.meanMs}`);
+    assert.ok(stats.maxMs >= 0, `maxMs must be non-negative, got ${stats.maxMs}`);
+    assert.ok(
+      stats.maxMs >= stats.meanMs,
+      `the slowest sweep cannot be below the mean (max ${stats.maxMs} < mean ${stats.meanMs})`,
+    );
+  });
+
+  it('counts a multi-market pass as one sweep that fetched every market', async () => {
+    // The measurement only means something because a sweep is
+    // markets.length serial requests: one sweep over two markets must be counted
+    // once while fetching both. Only COUNT and the fetch count are asserted —
+    // durations are timing-dependent and are never compared to a fixed figure.
+    const { deps, recorded } = recorder();
+    const fetch: RawBookFetcher = async () => GOOD_BODY;
+    const poller = new BookPoller([MARKET, SECOND_MARKET], deps, fetch);
+
+    await poller.pollAll();
+
+    assert.equal(poller.sweepStats()?.sweeps, 1, 'two markets are one sweep, not two');
+    assert.equal(recorded.books.length, 2, 'both markets are fetched inside that one sweep');
+  });
+
+  it('does not count a guard-dropped reentrant call as a sweep', async () => {
+    // `pollAll` returns immediately while a sweep is in flight, so the dropped
+    // call must not be measured — counting it would inflate `sweeps` and drag
+    // the mean down with zero-length samples.
+    const { deps } = recorder();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetch: RawBookFetcher = async () => {
+      await gate;
+      return GOOD_BODY;
+    };
+    const poller = new BookPoller([MARKET], deps, fetch);
+
+    const inFlight = poller.pollAll();
+    await poller.pollAll(); // reentrant: returns at once, `polling` is still held
+    assert.equal(poller.sweepStats(), null, 'the dropped call must not register as a sweep');
+
+    release();
+    await inFlight;
+
+    assert.equal(poller.sweepStats()?.sweeps, 1, 'only the real sweep is counted');
   });
 });

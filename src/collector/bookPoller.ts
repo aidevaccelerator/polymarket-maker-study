@@ -15,6 +15,20 @@ export interface BookPollerDeps {
   readonly onError: (market: TrackedMarket, err: unknown) => void;
 }
 
+/**
+ * Measured cost of the completed sweeps. Carried into
+ * `data/quality/manifest.json` so the achieved cadence is auditable from an
+ * artifact already collected and uploaded, rather than inferred from the
+ * configured interval. See `BookPoller.sweepStats`.
+ */
+export interface BookSweepStats {
+  /** Completed full passes over `markets`. A tick dropped by the reentrancy guard is not a sweep. */
+  readonly sweeps: number;
+  readonly meanMs: number;
+  /** Slowest sweep — the one that stretches the cadence furthest past the interval. */
+  readonly maxMs: number;
+}
+
 // The raw, unparsed /book body. Injecting the BODY rather than a pre-parsed
 // BookSnapshot keeps `parseBook` inside the test: a stub returning an already
 // parsed book would bypass the very parsing whose failure this file reports.
@@ -73,6 +87,28 @@ async function fetchBookOverHttp(market: TrackedMarket): Promise<unknown> {
   return fetchJson(`${CLOB_BASE}/book?token_id=${market.tokenId}`);
 }
 
+/**
+ * Full-book poller.
+ *
+ * CADENCE IS A SWEEP DURATION, NOT THE INTERVAL. `BOOK_POLL_MS` is the delay
+ * between ATTEMPTS, not the cadence actually achieved. `pollAll` walks
+ * `markets` with `await` in a `for` loop, so one sweep is `markets.length`
+ * SERIAL HTTP requests and its wall-clock duration is
+ * `markets.length x per-request latency`. The `polling` guard then DROPS any
+ * interval tick that lands while a sweep is still running — it returns
+ * immediately, it does not queue and it does not run concurrently. The effective
+ * cadence is therefore `max(BOOK_POLL_MS, markets x latency)`.
+ *
+ * The crossover is concrete: the documented interval stops being achieved once
+ * per-request latency exceeds `BOOK_POLL_MS / markets`. At the default
+ * `BOOK_POLL_MS = 5000` over the default 30 markets that is `5000 / 30`, i.e.
+ * once latency passes ~167 ms. `sweepStats()` exists so the number on the right
+ * is measured into the manifest rather than assumed.
+ *
+ * The sweep is deliberately sequential. Parallelising it would raise request
+ * concurrency against a public API, which is out of scope for this study; the
+ * reentrancy guard is likewise load-bearing, not incidental.
+ */
 export class BookPoller {
   private readonly prev = new Map<string, BookSnapshot>();
   // conditionIds whose malformed-response report has already been emitted and is
@@ -80,6 +116,9 @@ export class BookPoller {
   private readonly reportedMalformed = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
+  private sweepCount = 0;
+  private sweepTotalMs = 0;
+  private sweepMaxMs = 0;
 
   constructor(
     private readonly markets: readonly TrackedMarket[],
@@ -103,13 +142,39 @@ export class BookPoller {
   async pollAll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
+    const startedAt = Date.now();
     try {
       for (const market of this.markets) {
         await this.pollOne(market);
       }
     } finally {
       this.polling = false;
+      const elapsedMs = Date.now() - startedAt;
+      this.sweepCount += 1;
+      this.sweepTotalMs += elapsedMs;
+      if (elapsedMs > this.sweepMaxMs) this.sweepMaxMs = elapsedMs;
     }
+  }
+
+  /**
+   * Observed sweep cost, or null when no sweep has completed. `null` is
+   * deliberately not `0`: the discovery-failure, dry-run and empty-universe paths
+   * never start a poller, and a `0` ms sweep would read as a healthy
+   * instantaneous sweep rather than as "never ran". Recorded in the `finally` so
+   * a sweep that ends in thrown work is still measured — it consumed real time.
+   *
+   * Mean AND max rather than last: a last value is one sample and is noisy
+   * enough to be worth reading as an accident, while the mean alone hides the
+   * slow sweeps that are the ones stretching the cadence. Count is included so a
+   * mean or max computed from a handful of sweeps can be discounted.
+   */
+  sweepStats(): BookSweepStats | null {
+    if (this.sweepCount === 0) return null;
+    return {
+      sweeps: this.sweepCount,
+      meanMs: this.sweepTotalMs / this.sweepCount,
+      maxMs: this.sweepMaxMs,
+    };
   }
 
   private reportMalformed(market: TrackedMarket, reason: string): void {

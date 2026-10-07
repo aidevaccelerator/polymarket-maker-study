@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-63 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 125
+68 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 130
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 63 across 10 files; analysis 62 across
-9 files; total 125 across 19 files.
+Current per-file counts: shared + collector 68 across 10 files; analysis 62 across
+9 files; total 130 across 19 files.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test
@@ -431,8 +431,9 @@ manifest from a manifest that carries no expected counts; it no longer reports
 
 This gap cannot be closed by adding one field. `observedSamples` counts in-scope
 quote **touches**, which are event-driven (taker aggression) and have no knowable
-expected count, while the scheduled cadences (full book @5s, top-of-book @1s) do
-have computable expected counts. Writing `expected` as a plain per-kind sum
+expected count, while the scheduled cadences (top-of-book @1s; the full book only
+at its achieved sweep cadence — see §12) do have computable expected counts.
+Writing `expected` as a plain per-kind sum
 would compare a sum of scheduled-sample expectations against observed touches —
 a category mismatch. Enabling the check means deciding which record kinds are
 compared against which, and on what basis; that is a design decision and is
@@ -442,3 +443,105 @@ Tests in `src/analysis/parquetRead.test.ts` pin this: a manifest written the way
 the collector writes one has no `expected` field, and `renderMarkdown` neither
 emits the missing-sample warning nor claims the manifest is absent when
 `manifestPresent` is true.
+
+## 12. The full-book cadence is a sweep duration, not `BOOK_POLL_MS`
+
+**The claim being corrected.** The README data layout, the `BookSnapshot` comment
+in `src/shared/schema.ts` and the constant table in `docs/THRESHOLDS.md` all
+described tier 1 as "full order book @ 5s" / "a full depth snapshot every 5
+seconds". That is not what the collector delivers. This section states what it
+delivers.
+
+**The mechanism, read from the code.** `BookPoller.start(intervalMs =
+BOOK_POLL_MS)` installs `setInterval(() => { void this.pollAll(); }, intervalMs)`
+and fires one immediate sweep. `pollAll` is:
+
+```ts
+if (this.polling) return;
+this.polling = true;
+try {
+  for (const market of this.markets) {
+    await this.pollOne(market);
+  }
+} finally {
+  this.polling = false;
+}
+```
+
+`await` inside the `for` makes the sweep **strictly sequential** — one in-flight
+HTTP request per market, never parallel. And the `polling` guard means an
+interval tick that arrives while a sweep is still running **returns
+immediately**: it is dropped, not queued, and not run concurrently.
+`fetchJson` adds no retry and no parallelism (one `await fetch`, a 10s
+`AbortSignal.timeout`).
+
+So one sweep performs `markets.length` serial requests, and its wall-clock
+duration is approximately `markets.length × per-request latency`. Whenever that
+exceeds `intervalMs`, the next tick is dropped, so:
+
+> **effective cadence = `max(BOOK_POLL_MS, markets × per-request latency)`**
+
+**The crossover, stated concretely.** The documented interval stops being
+achieved once per-request latency exceeds **`BOOK_POLL_MS / markets`**. Generally:
+at a fixed market count, any latency above that quotient puts the collector into
+the sweep-bound regime; at a fixed latency, any market count above
+`BOOK_POLL_MS / latency` does the same. At the pre-registered defaults
+(`BOOK_POLL_MS = 5000`, 30 markets) the quotient is `5000 / 30 ≈ 167 ms`.
+
+One read-only probe measured a single real `/book` round trip at **266 ms**. If
+that were typical, 30 markets would cost ~7.98 s per sweep, roughly 1.6× the
+documented interval — the sweep-bound regime by default. Treat that figure as
+**one observation, not a measured average**: it was a single request taken before
+collection started, and the number that matters is recorded per-run in
+`manifest.json` (§below) rather than assumed here.
+
+**Why this matters beyond documentation.** The interval is load-bearing on the
+headline statistic. `detectTouches` (`src/collector/trades.ts`) derives an
+inferred touch's `size` as the net depth reduction at the touched level **between
+consecutive** snapshots:
+
+```ts
+const size = Math.max(0, levelSize(prev.bids, prevBestBid) - levelSize(next.bids, prevBestBid));
+```
+
+A longer real interval means more intervening fills are folded into each inferred
+touch, so inferred touch `size` runs **larger** than the documented 5s interval
+implies. Those sizes are the `takerSize` argument to `applyQueueModel`
+(`src/analysis/queueModels.ts`), whose `medianFill` computes
+`p = min(1, takerSize / queueAhead)` and returns it as `fillFraction` — the
+fill fractions behind the headline p50. A stated cadence the collector does not
+deliver would therefore have made that p50 unreadable, in the conservative
+direction: real inferred touches are coarser than "every 5 seconds" suggests.
+
+**What is NOT invalidated.** The existing lower-bound caveat stands unchanged: an
+add at the touched level between two polls is indistinguishable from a fill, so
+`size` remains a lower bound regardless of the interval. The interval lengthens
+that bound's window; it does not weaken the argument. Non-distinguishing of a
+cancellation from a fill, and the non-detection of a partial fill that does not
+move the best level, are likewise untouched.
+
+**Made observable rather than inferred.** `BookPoller.sweepStats()` reports
+`{ sweeps, meanMs, maxMs }` for the sweeps that actually completed, and
+`writeManifest` writes it to `data/quality/manifest.json` as `bookSweep`. The
+manifest is already uploaded by the recorder workflow and already rewritten on
+every process exit, so this adds a field to an existing artifact rather than
+creating a new one. Mean *and* max are reported, not last: a last value is one
+noisy sample, and a mean alone hides the slow sweeps that stretch the cadence
+furthest; `sweeps` lets a reader discount a statistic computed from few samples.
+Paths where no sweep ever ran — universe-discovery failure, `--dry-run`, empty
+universe — report `null`, never `0`, because a `0` ms sweep would read as a
+healthy instantaneous sweep rather than as "never ran".
+
+**Deliberately not done.** `BOOK_POLL_MS` is unchanged: altering it would change
+collection behaviour and the storage-cost rationale that depends on it. The sweep
+was not parallelised — that would raise request concurrency against a public API
+and is out of scope. The reentrancy guard was not touched. And no per-sweep gap
+entry was added: at roughly one sweep per 8s over 30 days that is ~324,000 log
+lines, which would swamp the durable gap log and the uploaded gap files under one
+repeating entry — the same failure mode §11's rate limiting exists to prevent.
+
+Tests in `src/collector/bookPoller.test.ts` pin the reporting: `null` before any
+sweep, one sweep counted per completed pass, a multi-market pass counted once,
+finite non-negative durations with `maxMs >= meanMs`, and a guard-dropped
+reentrant call not counted as a sweep. They assert counts and shapes, never a
+wall-clock duration, which would be flaky.

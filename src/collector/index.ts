@@ -1,13 +1,19 @@
 // Collector entrypoint. Discovers the filtered universe, starts the three-tier
-// ingestion pipeline (full book @5s, top-of-book @1s, inferred trade touches),
-// buffers writes, and shuts down cleanly on signal/crash while keeping every
-// committed Parquet file valid.
+// ingestion pipeline (full book swept every BOOK_POLL_MS, top-of-book @1s,
+// inferred trade touches), buffers writes, and shuts down cleanly on
+// signal/crash while keeping every committed Parquet file valid.
+//
+// "Swept every BOOK_POLL_MS", not "full book @5s": BOOK_POLL_MS is the interval
+// between attempts, and the achieved cadence is the sequential sweep duration.
+// Derivation and the crossover live in the BookPoller class comment; the observed
+// sweep cost is recorded in manifest.json as `bookSweep`.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BOOK_POLL_MS, TOB_POLL_MS } from '../shared/config.js';
 import { nowIso } from '../shared/time.js';
 import { BookPoller } from './bookPoller.js';
+import type { BookSweepStats } from './bookPoller.js';
 import { GapLog } from './gaps.js';
 import { discoverUniverse } from './gamma.js';
 import type { TrackedMarket } from './gamma.js';
@@ -83,7 +89,8 @@ async function main(): Promise<void> {
     });
   } catch (err) {
     gapLog.logError('universe discovery failed', { context: { error: errToString(err) } });
-    writeManifest(args.dataDir, startIso, [], writer.counts(), gapLog.totalGapSeconds());
+    // No poller was constructed, so no sweep ran: null, not 0.
+    writeManifest(args.dataDir, startIso, [], writer.counts(), gapLog.totalGapSeconds(), null);
     process.exit(1);
   }
 
@@ -95,13 +102,15 @@ async function main(): Promise<void> {
         2,
       )}\n`,
     );
-    writeManifest(args.dataDir, startIso, markets, writer.counts(), gapLog.totalGapSeconds());
+    // Dry run stops before any BookPoller exists: null, not 0.
+    writeManifest(args.dataDir, startIso, markets, writer.counts(), gapLog.totalGapSeconds(), null);
     return;
   }
 
   if (markets.length === 0) {
     gapLog.log('info', 'no markets matched the universe filter; exiting');
-    writeManifest(args.dataDir, startIso, [], writer.counts(), gapLog.totalGapSeconds());
+    // Empty universe, so no poller was started: null, not 0.
+    writeManifest(args.dataDir, startIso, [], writer.counts(), gapLog.totalGapSeconds(), null);
     return;
   }
 
@@ -168,7 +177,14 @@ async function main(): Promise<void> {
     } catch (err) {
       gapLog.logError('final flush failed', { context: { error: errToString(err) } });
     }
-    writeManifest(args.dataDir, startIso, markets, writer.counts(), gapLog.totalGapSeconds());
+    writeManifest(
+      args.dataDir,
+      startIso,
+      markets,
+      writer.counts(),
+      gapLog.totalGapSeconds(),
+      bookPoller.sweepStats(),
+    );
     process.exit(exitCode);
   }
 
@@ -193,6 +209,7 @@ function writeManifest(
   markets: readonly TrackedMarket[],
   counts: ReturnType<ParquetWriter['counts']>,
   totalGapSeconds: number,
+  bookSweep: BookSweepStats | null,
 ): void {
   const qualityDir = join(dataDir, 'quality');
   mkdirSync(qualityDir, { recursive: true });
@@ -209,6 +226,15 @@ function writeManifest(
     })),
     recordCounts: counts,
     totalGapSeconds,
+    // MEASURED full-book sweep cost. `BOOK_POLL_MS` is only the interval between
+    // attempts: the sweep is sequential, so the achieved cadence is
+    // max(BOOK_POLL_MS, markets x per-request latency) and any tick landing
+    // mid-sweep is dropped by the reentrancy guard. Recording the observed sweep
+    // here makes the real cadence auditable from this already-uploaded artifact
+    // instead of inferred. `null` where no poller ever ran (universe discovery
+    // failed, dry-run, empty universe) — never 0, which would read as a healthy
+    // instantaneous sweep.
+    bookSweep,
   };
   writeFileSync(join(qualityDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }

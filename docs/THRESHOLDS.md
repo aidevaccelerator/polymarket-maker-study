@@ -216,7 +216,7 @@ were moved into `src/shared/` on 2026-10-07.
 | `MIN_LIQUIDITY_USD` | `25_000` | Best-effort USD liquidity gate (notional at the best level). |
 | `MIN_SPREAD_TICKS` | `1` | Universe filter on quoted spread. |
 | `ALLOWED_CATEGORIES` | Politics, Finance, Economics | Categories the collector records. |
-| `BOOK_POLL_MS` / `TOB_POLL_MS` | `5_000` / `1_000` | Full-book and top-of-book polling cadence. |
+| `BOOK_POLL_MS` / `TOB_POLL_MS` | `5_000` / `1_000` | Nominal polling INTERVALS, not achieved cadence. `TOB_POLL_MS` is a timer over an in-memory map, so 1s is achieved. `BOOK_POLL_MS` is only the delay between full-book sweep ATTEMPTS: the sweep is sequential, so the achieved cadence is `max(BOOK_POLL_MS, markets × per-request latency)` and a tick landing mid-sweep is dropped. The observed value is recorded in `manifest.json` as `bookSweep`. |
 | Fee / rebate schedule | `src/shared/fees.ts` | Per-trade costs and maker rebates, transcribed from <https://docs.polymarket.com/trading/fees> (retrieved 2026-10-07). |
 
 This table and `src/shared/config.ts` were reconciled line by line on 2026-10-07. Both

@@ -21,7 +21,10 @@
 // `bids`/`asks` are serialized as JSON strings (`JSON.stringify` of the
 // `[number, number][]` tuple array); call `JSON.parse` to recover them.
 
-// Full orderbook snapshot, ~every 5s
+// Full orderbook snapshot. Cadence is a SEQUENTIAL SWEEP duration, not a flat
+// interval: the effective cadence is max(BOOK_POLL_MS, markets x per-request
+// latency). An expected row count must come from the OBSERVED sweep cost in
+// manifest.json `bookSweep`, not from BOOK_POLL_MS. See src/collector/bookPoller.ts.
 export interface BookSnapshot {
   ts: string;              // ISO8601 UTC, from exchange payload when available
   recvTs: string;          // local ISO8601 UTC receive time

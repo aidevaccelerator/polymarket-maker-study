@@ -48,7 +48,7 @@ npm run analyze             # after data has accumulated: emit report + verdict
 
 `collect:probe` connects to the feed and validates the output schema without writing to the dataset: it opens no websocket and writes no parquet, but it does append to `data/quality/gaps-YYYY-MM-DD.jsonl` and overwrite `data/quality/manifest.json` — run it first to confirm the environment works. `collect` records continuously. `analyze` reads whatever has been recorded and emits `reports/analysis.md` (Markdown) and `reports/summary.json` (JSON); it exits 1 if the dataset is empty or unusable. Both paths are overridable with `--data-dir` / `--out-dir`, and `--from` / `--to` bound the time window.
 
-`build` and `test` cover the shared contract and the collector (`src/shared`, `src/collector`) at full strictness — 10 test files, 63 tests. Use `build:all` / `test:all` to include `src/analysis` as well — 19 test files, 125 tests. They are separate so that a half-finished change in the analysis code cannot turn the collector's own build and tests red. `test:all` is the only script that covers the analysis half.
+`build` and `test` cover the shared contract and the collector (`src/shared`, `src/collector`) at full strictness — 10 test files, 68 tests. Use `build:all` / `test:all` to include `src/analysis` as well — 19 test files, 130 tests. They are separate so that a half-finished change in the analysis code cannot turn the collector's own build and tests red. `test:all` is the only script that covers the analysis half.
 
 Tests run against compiled output in `dist/`, so a build must precede them. `npm test` and `npm run test:all` each have a `pretest` hook that builds first, so neither can run against a stale or missing `dist/`. Both go through `scripts/run-tests.mjs`, which refuses to report a green when a test source has no emitted test file, when no test files exist at all, or when the aggregate test count disagrees with the sum of the per-file counts.
 
@@ -56,11 +56,13 @@ Tests run against compiled output in `dist/`, so a build must precede them. `npm
 
 The dataset lives in `./data/` (gitignored; see `.gitignore`). Three tiers, each sized to the job it does:
 
-1. **Full order book @ 5s** — a full depth snapshot every 5 seconds. The context tier: where the spread and edge actually sit.
-2. **Top-of-book @ 1s** — best bid/ask and mid every 1 second. Near-fill mid precision at ~1Hz, but only two levels, so cheap.
+1. **Full order book, one sequential sweep every ~5s** — a full depth snapshot per market per sweep. The context tier: where the spread and edge actually sit. **The cadence is the sweep duration, not `BOOK_POLL_MS`**: the poller walks the tracked markets one at a time, so a sweep costs `markets × per-request latency`, and an interval tick arriving mid-sweep is dropped rather than queued. The effective cadence is therefore `max(5s, markets × latency)` — at the default 30 markets, the 5s figure stops being achieved once per-request latency passes ~167ms. The achieved value is measured, not assumed: `data/quality/manifest.json` records `bookSweep` (sweep count, mean ms, max ms).
+2. **Top-of-book @ 1s** — best bid/ask and mid every 1 second. Near-fill mid precision at ~1Hz, but only two levels, so cheap. This cadence *is* achieved: it is a timer reading an in-memory map fed by the websocket, with no per-market request.
 3. **Trade prints (events)** — every matched trade with its exact timestamp. The fills themselves.
 
-The rationale: storing full 1 Hz order books across ~20 markets for 30+ days is ~52 million snapshots — most of which is depth that never matters for the verdict. What *does* matter is the mid at the moment of a fill (markout precision), and that is captured by the event stream plus 1s top-of-book. The 5s full book supplies spread/edge context at a fraction of the storage. That is the trade this design makes: precision where it counts, cheap context everywhere else.
+The rationale: storing full 1 Hz order books across ~20 markets for 30+ days is ~52 million snapshots — most of which is depth that never matters for the verdict. What *does* matter is the mid at the moment of a fill (markout precision), and that is captured by the event stream plus 1s top-of-book. The full book supplies spread/edge context at a fraction of the storage. That is the trade this design makes: precision where it counts, cheap context everywhere else. Note that the storage saving is unaffected by how long a sweep actually takes — a slower cadence writes fewer books, never more.
+
+The full-book cadence is not cosmetic. `detectTouches` derives an inferred touch's size from the net depth reduction between **consecutive** book snapshots, so a longer real interval accumulates more intervening fills into each inferred touch, and those sizes feed `applyQueueModel`'s fill fractions behind the headline p50. The interval had to be stated accurately for that number to be readable. See `src/analysis/ASSUMPTIONS.md`.
 
 The dataset is synced out-of-band — the operator copies `./data` to object storage with `rsync`/`rclone`; it is never committed and never uploaded through Actions.
 
@@ -89,7 +91,7 @@ The operator splits time between two countries, which is the deciding factor: a 
 
 ```
 .github/workflows/collect.yml   # 24/7 recorder (self-hosted; builds, then records — runs no tests)
-.github/workflows/analyze.yml   # nightly batch (hosted; builds and runs the full 125-test suite)
+.github/workflows/analyze.yml   # nightly batch (hosted; builds and runs the full 130-test suite)
 docs/SECURITY.md                # self-hosted runner trust model (read before running)
 docs/THRESHOLDS.md              # pre-registration record (the credibility backbone)
 src/shared/                     # shared constants + threshold values
