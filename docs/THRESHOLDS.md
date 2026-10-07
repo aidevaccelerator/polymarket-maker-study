@@ -126,6 +126,22 @@ optimistic story. To be credible, this project reports the worst-case reading fi
 the pessimistic model passes, that is a real result; if only the optimistic model passes,
 that is not evidence. See README "Honesty".
 
+### How to read per-rule status
+
+Each entry in a report's `rules` array carries `status: 'PASS' | 'FAIL'` and nothing else;
+there is no rule-level `MARGINAL` or any other outcome name. `status: 'FAIL'` means only
+that the adverse condition the rule tests for is present, i.e. the rule did not clear; it is
+not a claim about `overall`. Rules are evaluated independently against the bounds above.
+A `MARGINAL` headline therefore always reports exactly two `FAIL`s: `pessimistic_marginal_band`
+fires because the median is inside [1.0¢, 1.3¢], and `pessimistic_pass` fails because that
+median is not strictly below 1.0¢ (it fails too when no median is computable). The
+precedence chain above still resolves `overall` to `MARGINAL`; `overall` is the only place
+the headline is decided.
+Worked example, checkable against any report: pess 1.2¢, med 1.2¢, taker share 0.6, 150
+fills reports `pessimistic_median_markout_fail` PASS, `median_model_median_markout_fail`
+PASS, `pessimistic_marginal_band` FAIL, `pessimistic_pass` FAIL, `taker_share_floor` PASS,
+`overall` `MARGINAL`. Every rule is always reported, so none masks another.
+
 ## Model parameters fixed in code
 
 The following are not decision thresholds, but they are treated as pre-registered
