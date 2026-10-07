@@ -38,7 +38,7 @@ Markout verdicts are reported **pessimistic-model-first**; optimistic-model numb
 Prerequisites: Node.js ≥ 20, npm ≥ 9, and enough free disk (the dataset grows over time — see Data layout).
 
 ```sh
-git clone <this-repo-url>
+git clone https://github.com/aidevaccelerator/polymarket-maker-study.git
 cd polymarket-maker-study
 npm ci                      # or npm install
 npm run collect:probe       # connect to the feed, validate schema; writes data/quality/ only

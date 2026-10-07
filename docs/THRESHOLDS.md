@@ -12,12 +12,18 @@ below were fixed before any data was collected, and none of them has been change
 > `src/shared/config.ts` so that the code and this document must be reconciled together
 > before any result is reported.
 
-> **On tamper-evidence.** This repository intentionally has no git history, so this
-> pre-registration has no cryptographic version history. The guarantee it offers is
-> **documentary, not tamper-evident**: the values below can be compared against
-> `src/shared/config.ts` at any time, and the amendment log records every change with a
-> date. A reader who wants cryptographic provenance would need a signed commit history,
-> which this repo does not have.
+> **On tamper-evidence.** This repository has version history: exactly one commit,
+> `9d76b611f13280b8e857a929bdaa1e9ba6bd815c`, the pre-registration commit that froze the
+> values below. It is public at <https://github.com/aidevaccelerator/polymarket-maker-study>,
+> so any third party can check these threshold values against `src/shared/config.ts` as of
+> that commit instead of taking this document's word for it.
+>
+> The limit is worth stating plainly. One commit means there is no history of *prior*
+> versions, so what is covered is "these values have not changed since the pre-registration
+> commit" — not "these values were reached by a visible sequence of revisions". A commit
+> is not immutable and this repository is not append-only; an amended commit would change
+> the hash. The defensible claim is the narrower one: any change after the pre-registration
+> commit changes that hash, the hash is recorded here, and it is publicly observable.
 
 ## The pre-registered thresholds
 
@@ -192,3 +198,19 @@ entrypoints (`src/collector/index.ts`, `src/analysis/index.ts`) exist and build.
   output paths (`reports/analysis.md`, `reports/summary.json`), the analysis test-file count
   (9), and the claim that `collect.yml` runs tests (it runs none) were corrected. No
   threshold value changed.
+
+- **2026-10-07 — Repository placed under version control and published; the "no git
+  history" claim corrected as factually stale.** The "On tamper-evidence" note above stated
+  that this repository intentionally had no git history and that the guarantee it offered
+  was documentary rather than tamper-evident. That was accurate when the document was
+  drafted and became false once the repository was published: the pre-registration commit
+  is `9d76b611f13280b8e857a929bdaa1e9ba6bd815c` and it is public at
+  <https://github.com/aidevaccelerator/polymarket-maker-study>, so any third party can
+  verify the threshold values above against `src/shared/config.ts` as of that commit. The
+  note is corrected accordingly and now claims only what is true — that any change after
+  the pre-registration commit alters the hash, and that the hash is recorded here and
+  publicly observable — **not** that the history is immutable or append-only. **No threshold
+  value changed**, and no constant, verdict rule, or precedence ordering was touched; this
+  is a correction to a claim about the repository's own provenance. Recorded rather than
+  quietly applied, on the same footing as the entries above: made after the document was
+  drafted but before any data existed. No data has been collected or viewed.
