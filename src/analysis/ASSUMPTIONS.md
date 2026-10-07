@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (6 files,
-27 tests). It does **not** touch this half. Only `npm run test:all` (15 files, 83
+27 tests). It does **not** touch this half. Only `npm run test:all` (15 files, 89
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 27 across 6 files; analysis 56 across
-9 files; total 83 across 15 files.
+Current per-file counts: shared + collector 27 across 6 files; analysis 62 across
+9 files; total 89 across 15 files.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test
@@ -340,3 +340,39 @@ is untouched.
   (`bestPrice * bestSize`) as a proxy for market liquidity, because the schema
   carries no aggregate depth. Touches with no book snapshot to measure are
   **kept**, not dropped, so the filter can only under-count exclusions.
+
+**KNOWN GAP 2026-10-07 — there is no automatic missing-sample check on the
+verdict.** `CoverageReport.missingFraction` and its `>= 30%` warning are inert,
+and a reader is therefore never told when the dataset is too degraded to trust.
+The cause is a missing input, not a missing check:
+
+- `writeManifest` in `src/collector/index.ts` writes `startTime`, `endTime`,
+  `marketCount`, `marketsTracked`, `recordCounts` and `totalGapSeconds`. It writes
+  no expected-sample counts, and no other code synthesizes them.
+- `extractExpectedCount` (`src/analysis/index.ts`) reads `manifest.expected`,
+  which `QualityManifest` declares as required but the collector never populates
+  (`src/analysis/parquetRead.ts` parses the file with a bare cast). It therefore
+  returns `null` on every run, so `expectedSamples` and `missingFraction` are
+  always `null` and the `MISSING_THRESHOLD` branch in `report.ts` is unreachable.
+
+What the report *does* show is still trustworthy: the observed counts
+(book snapshots, top-of-book rows, quote touches, pessimistic fills) and
+`gapsCount`, which is the number of records in the append-only JSONL gap files
+and is therefore cumulative across runs. A reader must assess coverage from
+those counts and the emitted warnings. `report.ts` now distinguishes an absent
+manifest from a manifest that carries no expected counts; it no longer reports
+"no `data/quality/manifest.json` found" for a file it read successfully.
+
+This gap cannot be closed by adding one field. `observedSamples` counts in-scope
+quote **touches**, which are event-driven (taker aggression) and have no knowable
+expected count, while the scheduled cadences (full book @5s, top-of-book @1s) do
+have computable expected counts. Writing `expected` as a plain per-kind sum
+would compare a sum of scheduled-sample expectations against observed touches —
+a category mismatch. Enabling the check means deciding which record kinds are
+compared against which, and on what basis; that is a design decision and is
+deliberately left unsettled here. No expected-sample model has been invented.
+
+Tests in `src/analysis/parquetRead.test.ts` pin this: a manifest written the way
+the collector writes one has no `expected` field, and `renderMarkdown` neither
+emits the missing-sample warning nor claims the manifest is absent when
+`manifestPresent` is true.

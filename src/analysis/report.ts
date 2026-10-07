@@ -4,8 +4,15 @@
  * Honesty rules enforced here:
  *   - The PESSIMISTIC model is the headline everywhere. Optimistic is context.
  *   - Sample sizes are reported alongside every distribution.
- *   - Data-coverage warnings (manifest gaps, missing samples) surface in the
- *     report. If >= 30% of expected samples are missing, it is called out.
+ *   - Data-coverage warnings surface in the report, one `- warning: ...` line
+ *     each. Observed counts and the cumulative gap-record count are always
+ *     printed, and whether the manifest was found at all is reported
+ *     explicitly.
+ *   - NOT enforced here: a missing-sample *fraction*. The collector records no
+ *     expected-sample counts, so `expectedSamples` is always null and
+ *     MISSING_THRESHOLD below gates nothing. Do not add it to this list until
+ *     the collector writes expected counts; see extractExpectedCount in
+ *     src/analysis/index.ts and src/analysis/ASSUMPTIONS.md.
  */
 
 import type { RebateAccrual } from './rebates.js';
@@ -25,6 +32,14 @@ export interface CoverageReport {
   observedSamples: number;
   missingFraction: number | null;
   gapsCount: number;
+  /**
+   * Whether `data/quality/manifest.json` was actually found and parsed. Kept
+   * separate from `expectedSamples` because a manifest that exists but carries
+   * no expected-sample counts is a different fact from no manifest at all, and
+   * collapsing the two produced a report that claimed a file was missing when
+   * it had been read.
+   */
+  manifestPresent: boolean;
   warnings: string[];
 }
 
@@ -52,6 +67,14 @@ export interface AnalysisResult {
   coverage: CoverageReport;
 }
 
+/**
+ * Not a pre-registered constant: it is not exported from src/shared/config.ts,
+ * has no docs/THRESHOLDS.md entry, and gates no verdict — it only decorates a
+ * single coverage line. Currently unreachable, because `missingFraction` is
+ * always null (see extractExpectedCount in src/analysis/index.ts). Value
+ * deliberately unchanged; it is documented here rather than promoted to
+ * config.ts so no one mistakes it for a registered threshold.
+ */
 const MISSING_THRESHOLD = 0.3;
 
 function fmtPct(x: number): string {
@@ -117,6 +140,11 @@ export function renderMarkdown(r: AnalysisResult): string {
         `- ⚠️ WARNING: >= ${fmtPct(MISSING_THRESHOLD)} of expected samples are missing. Results may be unrepresentative.`,
       );
     }
+  } else if (r.coverage.manifestPresent) {
+    push(
+      '- manifest found and read, but it carries no expected-sample counts, so a ' +
+        'missing fraction is not computable; observed counts only.',
+    );
   } else {
     push('- no data/quality/manifest.json found; expected sample count unknown.');
   }

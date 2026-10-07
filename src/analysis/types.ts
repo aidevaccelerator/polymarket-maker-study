@@ -121,6 +121,15 @@ export interface Dataset {
 }
 
 export interface QualityManifest {
+  /**
+   * Declared but NEVER written. `writeManifest` in src/collector/index.ts emits
+   * no `expected` key, and src/analysis/parquetRead.ts parses the file with a
+   * bare cast, so a real parsed manifest has `expected === undefined` even
+   * though the type marks it required. Kept rather than removed: it documents
+   * the intended contract, and extractExpectedCount in src/analysis/index.ts
+   * reads it. Do not populate it without settling what is compared against
+   * what — see src/analysis/ASSUMPTIONS.md.
+   */
   expected: Record<string, number>;
   [key: string]: unknown;
 }

@@ -146,6 +146,19 @@ function countPessimisticFills(touches: Dataset['touches']): number {
   return n;
 }
 
+/**
+ * Sum the manifest's per-kind expected-sample counts, or null when it carries none.
+ *
+ * ALWAYS RETURNS NULL TODAY. `writeManifest` in src/collector/index.ts writes
+ * startTime, endTime, marketCount, marketsTracked, recordCounts and
+ * totalGapSeconds — and no `expected` field — so there is nothing to sum. The
+ * field is declared on `QualityManifest` (src/analysis/types.ts) and
+ * src/analysis/parquetRead.ts parses the file with a bare cast, so a parsed
+ * manifest has `expected === undefined` despite the type calling it required.
+ *
+ * The consequence is that buildCoverage's missing-fraction warning below cannot
+ * fire, so no reader is ever told the dataset is too degraded to trust.
+ */
 function extractExpectedCount(manifest: Dataset['quality']): number | null {
   if (manifest === null) return null;
   const expected = manifest.expected;
@@ -162,6 +175,22 @@ function extractExpectedCount(manifest: Dataset['quality']): number | null {
   return any ? total : null;
 }
 
+/**
+ * Summarize how complete the dataset is. `gapsCount` is the count of records in
+ * the append-only JSONL gap files, so it IS cumulative across runs and correct.
+ *
+ * The missing-fraction half is inert: because extractExpectedCount always
+ * returns null, `expectedSamples` and `missingFraction` are always null and the
+ * >= 30% branch is unreachable. Adding an `expected` field would not by itself
+ * fix it, because `observedSamples` counts in-scope quote TOUCHES, which are
+ * event-driven (taker aggression) and have no knowable expected count, while the
+ * scheduled cadences (full book @5s, top-of-book @1s) do. Writing `expected` as
+ * a plain per-kind sum would compare scheduled-sample expectations against
+ * observed touches — a category mismatch. Enabling this guard means deciding
+ * which record kinds are compared, which is a design decision, not a missing
+ * field. Documented in src/analysis/ASSUMPTIONS.md; the state is pinned by tests
+ * in src/analysis/parquetRead.test.ts.
+ */
 function buildCoverage(dataset: Dataset, observedSamples: number): CoverageReport {
   const expectedSamples = extractExpectedCount(dataset.quality);
   const missingFraction =
@@ -179,6 +208,7 @@ function buildCoverage(dataset: Dataset, observedSamples: number): CoverageRepor
     observedSamples,
     missingFraction,
     gapsCount: dataset.gaps.length,
+    manifestPresent: dataset.quality !== null,
     warnings,
   };
 }
@@ -303,9 +333,10 @@ async function main(): Promise<void> {
   });
 
   const coverage = buildCoverage(dataset, touchesInScope.length);
-  if (dataset.quality === null) {
-    coverage.warnings.push('no data/quality/manifest.json found; expected sample count unknown.');
-  }
+  // The "no manifest" case is reported once, by renderMarkdown's Data-coverage
+  // section, which reads coverage.manifestPresent. It used to be pushed here as
+  // a warning too, so a genuinely absent manifest printed the identical sentence
+  // twice — once as a coverage line and once as `- warning: ...`.
   if (pessimisticFills.length === 0) {
     coverage.warnings.push('zero pessimistic fills in window — every distribution will be empty.');
   }
