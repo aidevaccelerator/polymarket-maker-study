@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-96 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 158
+102 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 164
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 96 across 10 files; analysis 62 across
-9 files; total 158 across 19 files.
+Current per-file counts: shared + collector 102 across 10 files; analysis 62 across
+9 files; total 164 across 19 files.
 
 **UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
 universe-discovery path — market parsing, category resolution from parent-event
@@ -424,6 +424,61 @@ at the top of `src/collector/ws.test.ts`: that file pins the delay schedule and
 does **not** pin the reset-on-open wiring, which would require opening a real
 socket or widening the class's injection surface. `gaps.ts` consumers are
 unaffected — the gap events are byte-identical in shape.
+
+**UPDATE 2026-10-07 — accepted markets are de-duplicated by `conditionId`, and
+the duplicates are counted rather than dropped.** `discoverUniverse` collected
+every market record that passed the filters into a plain array, so a
+`conditionId` returned more than once in one scan became one `TrackedMarket`
+per occurrence. The accepted collection is now keyed by `conditionId`. Two
+consequences were worth fixing before any data is recorded rather than during a
+run, both read off the code:
+
+- `BookPoller` keys its prior-book map by `conditionId`, so N occurrences of
+  one condition meant N sequential `/book` requests per sweep for an identical
+  book — N times the request load against a public endpoint for no new
+  information — and inflated the `bookSweep` mean in the manifest.
+- `writeManifest`'s `marketsTracked` mapped the array, so the manifest's market
+  list repeated the entry and `marketCount` was overstated.
+
+The websocket side was **not** affected and this change does not help there:
+`PriceWs`'s constructor collapses the tokens into `tokenByAssetId`, so a
+repeated condition routed each update once already. **Whether Polymarket's
+`/markets` pagination ever repeats a market is UNVERIFIED and not expected** —
+this is a latent robustness gap, not an observed incident, on the same reasoning
+as the reconnect-backoff entry above.
+
+**The survivor is the highest-liquidity instance.** The scan already sorts by
+`liquidityNum` descending and then slices to `maxMarkets`, so preferring the
+higher-liquidity duplicate is consistent with what the universe already does; a
+"first seen wins" rule would instead keep whichever copy the feed happened to
+page first and silently discard the better-liquid one. An exact `liquidityNum`
+tie resolves to the **first occurrence**, so the winner is decided by scan order
+and never by `Map` iteration order. De-duplication happens *before* the sort and
+the slice, and the early-stop test counts *distinct* conditions, so a repeated
+condition can never consume a `maxMarkets` slot and crowd out a distinct one. A
+scan containing no duplicates is unaffected: `Map` values come back in first-seen
+order, the sort is stable, and the result is the one the previous array produced
+— pinned by an explicit no-op test, and verified by mutation (disabling the
+de-duplication fails 5 of the 6 tests).
+
+**The accounting is explicit, and the invariant generalises rather than
+changes.** `seen` is still every record the scan read; it was NOT redefined.
+`DiscoverResult` gained `duplicateMarkets`, so
+
+> acceptedUnique + rejected + unparseable + duplicates === seen
+
+and with no duplicates the pre-existing `markets.length + rejected +
+unparseable === seen` form still holds verbatim. That distinction is the
+load-bearing part: silently discarding the repeated records would have left
+`seen` not reconciling with the sum of its parts, which is the same class of
+silent under-reporting as the dead coverage guard fixed in 6c5f6e0. The count
+rides in the existing single per-scan gap-log line (one line per scan, never one
+per duplicate) and is reported unconditionally, matching the neighbouring
+`unparseable` figure rather than making the field's presence itself the signal.
+Pinned on a mixed input — plain accept, duplicated accept, a duplicated pair with
+differing liquidity, two named filter rejections and two unreadable records —
+with the exact per-bucket counts asserted so a regression in any single bucket is
+visible rather than masked by the sum still working out.
 
 **KNOWN GAP 2026-10-07 — there is no automatic missing-sample check on the
 verdict.** `CoverageReport.missingFraction` and its `>= 30%` warning are inert,

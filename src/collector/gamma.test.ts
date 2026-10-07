@@ -173,6 +173,10 @@ function routed(events: readonly unknown[], markets: readonly unknown[]): {
   return { fetch, eventUrls, marketUrls };
 }
 
+function rejectedTotal(rejected: Readonly<Record<string, number>>): number {
+  return Object.values(rejected).reduce((a, b) => a + b, 0);
+}
+
 function conditionIdsOf(rows: readonly unknown[]): string[] {
   const out: string[] = [];
   for (const row of rows) {
@@ -478,5 +482,170 @@ describe('discoverUniverse over an injected body', () => {
 
     assert.equal(delays.length, 49);
     assert.deepEqual([...new Set(delays)], [60], 'the 60 ms pause reaches both paging layers');
+  });
+
+  // ── de-duplication of accepted markets by conditionId ──
+  //
+  // The accepted collection is keyed by conditionId, so a repeated condition can
+  // neither occupy two slots in the universe nor be counted twice in `seen`'s
+  // reconciliation. What is pinned below: the survivor rule (highest liquidity,
+  // first encountered on an exact tie), that the `maxMarkets` cap is spent on
+  // DISTINCT conditions, that a scan with no duplicates is untouched, and that the
+  // accounting still reconciles on a mixed input.
+  describe('de-duplication by conditionId', () => {
+    it('tracks a conditionId that appears twice exactly once', async () => {
+      const result = await discover({
+        markets: [liveMarket({ conditionId: '0xdup' }), liveMarket({ conditionId: '0xdup' })],
+      });
+
+      assert.deepEqual(result.markets.map((m) => m.conditionId), ['0xdup']);
+      assert.equal(result.markets.length, 1);
+      assert.equal(result.seen, 2, 'both records were read, and `seen` still counts both');
+      assert.equal(result.duplicateMarkets, 1, 'the dropped occurrence is counted, not discarded');
+    });
+
+    it('keeps the higher-liquidity instance, whichever order the two arrive in', async () => {
+      // A "first seen wins" rule would keep the thin instance whenever the feed
+      // happened to page the thin copy first, so the surviving liquidity would
+      // depend on feed order. Liquidity order is already the preference the
+      // maxMarkets slice applies, so the de-dup applies it too.
+      const thin = liveMarket({ conditionId: '0xdup', liquidityNum: 100_000, question: 'thin copy' });
+      const thick = liveMarket({ conditionId: '0xdup', liquidityNum: 300_000, question: 'thick copy' });
+
+      const thinFirst = await discover({ markets: [thin, thick] });
+      const thickFirst = await discover({ markets: [thick, thin] });
+
+      assert.equal(thinFirst.markets.length, 1, 'one entry for the condition either way');
+      assert.equal(thinFirst.markets[0]?.question, 'thick copy');
+      assert.equal(thickFirst.markets[0]?.question, 'thick copy', 'the survivor does not depend on page order');
+      assert.equal(thinFirst.duplicateMarkets, 1);
+      assert.equal(thickFirst.duplicateMarkets, 1);
+    });
+
+    it('resolves an exact liquidity tie to the first occurrence, not to Map order', async () => {
+      // Equal liquidityNum means "no instance is better", so the choice must be made
+      // by scan order rather than left to Map insertion/iteration behaviour. Running
+      // the same pair both ways round shows which of the two copies wins: whichever
+      // is read first, which is the only tie-break that is deterministic and
+      // reproducible from the feed alone.
+      const first = liveMarket({ conditionId: '0xtie', liquidityNum: 250_000, slug: 'first-seen' });
+      const second = liveMarket({ conditionId: '0xtie', liquidityNum: 250_000, slug: 'second-seen' });
+
+      const forward = await discover({ markets: [first, second] });
+      const reversed = await discover({ markets: [second, first] });
+
+      assert.equal(forward.markets.length, 1);
+      assert.equal(forward.markets[0]?.slug, 'first-seen', 'equal liquidity keeps the first occurrence read');
+      assert.equal(reversed.markets[0]?.slug, 'second-seen', '"first" means scan order, so the rule is stable');
+      assert.equal(forward.duplicateMarkets, 1);
+      assert.equal(reversed.duplicateMarkets, 1);
+    });
+
+    it('spends the maxMarkets cap on distinct conditions, never on duplicates', async () => {
+      // Three occurrences of the MOST liquid condition plus one distinct condition
+      // below it, capped at two. The correct expectation is one slot for 0xa and one
+      // for 0xb: de-duplication happens before the sort and the slice, so a repeated
+      // condition has already collapsed to one entry and cannot take a second slot.
+      // Read off the implementation rather than assumed: before the fix the array
+      // held four records and both slots went to 0xa, crowding 0xb out entirely.
+      const result = await discover({
+        markets: [
+          liveMarket({ conditionId: '0xa', liquidityNum: 500_000 }),
+          liveMarket({ conditionId: '0xa', liquidityNum: 500_000 }),
+          liveMarket({ conditionId: '0xa', liquidityNum: 500_000 }),
+          liveMarket({ conditionId: '0xb', liquidityNum: 300_000 }),
+        ],
+        maxMarkets: 2,
+      });
+
+      assert.deepEqual(result.markets.map((m) => m.conditionId), ['0xa', '0xb']);
+      assert.equal(result.duplicateMarkets, 2, 'three occurrences of 0xa collapse to one, so two are dropped');
+      assert.equal(result.seen, 4);
+      assert.equal(result.markets.length + result.duplicateMarkets, result.seen);
+    });
+
+    it('is a no-op on a scan with no duplicates', async () => {
+      // The property that makes this safe to land before collection starts: with no
+      // repeated conditionId the Map values come back in first-seen order, the sort
+      // is stable, and nothing is dropped — so the result is the one the pre-fix
+      // array produced, plus a duplicate count of zero.
+      const result = await discover({
+        markets: [
+          liveMarket({ conditionId: '0xa', liquidityNum: 300_000 }),
+          liveMarket({ conditionId: '0xb', liquidityNum: 100_000 }),
+          liveMarket({ conditionId: '0xc', liquidityNum: 200_000 }),
+        ],
+      });
+
+      assert.deepEqual(result.markets.map((m) => m.conditionId), ['0xa', '0xc', '0xb'], 'liquidity-descending');
+      assert.equal(result.duplicateMarkets, 0);
+      assert.equal(result.seen, 3);
+      assert.equal(result.unparseable, 0);
+      assert.deepEqual(result.rejected, {
+        closed: 0,
+        category: 0,
+        liquidity: 0,
+        probability: 0,
+        spread: 0,
+        no_yes_token: 0,
+      });
+      assert.equal(
+        result.markets.length + rejectedTotal(result.rejected) + result.unparseable + result.duplicateMarkets,
+        result.seen,
+      );
+    });
+
+    it('reconciles seen against accepted, rejected, unparseable and duplicates', async () => {
+      // The load-bearing claim for a project whose purpose is unreconciled numbers.
+      // One page mixing a plain accept, a duplicated accept, a duplicated pair with
+      // differing liquidity, two named filter rejections and two unreadable records,
+      // with the EXACT counts asserted per bucket so a regression in any single one
+      // is visible rather than masked by the sum still working out.
+      const markets = [
+        liveMarket({ conditionId: '0xaccept' }),
+        liveMarket({ conditionId: '0xaccept' }),
+        liveMarket({ conditionId: '0xdup-lo', liquidityNum: 100_000 }),
+        liveMarket({ conditionId: '0xdup-hi', liquidityNum: 300_000 }),
+        // Repeat both, each an exact liquidity tie with the copy already accepted.
+        liveMarket({ conditionId: '0xdup-lo', liquidityNum: 100_000 }),
+        liveMarket({ conditionId: '0xdup-hi', liquidityNum: 300_000 }),
+        liveMarket({ conditionId: '0xlow', outcomePrices: '["0.21","0.79"]' }),
+        liveMarket({ conditionId: '0xthin', liquidityNum: 10 }),
+        // Neither of these is a rejection: they are records the parser cannot read.
+        liveMarket({ conditionId: '' }),
+        'not an object at all',
+      ];
+
+      const result = await discover({ markets });
+
+      assert.equal(result.seen, 10);
+      assert.deepEqual(
+        result.markets.map((m) => m.conditionId),
+        ['0xdup-hi', '0xaccept', '0xdup-lo'],
+        'three distinct conditions, ordered by liquidity',
+      );
+      assert.equal(result.unparseable, 2);
+      assert.deepEqual(result.rejected, {
+        closed: 0,
+        category: 0,
+        liquidity: 1,
+        probability: 1,
+        spread: 0,
+        no_yes_token: 0,
+      });
+      assert.equal(result.duplicateMarkets, 3, 'three accepted records repeated a conditionId');
+
+      assert.equal(
+        result.markets.length + rejectedTotal(result.rejected) + result.unparseable + result.duplicateMarkets,
+        result.seen,
+        'acceptedUnique + rejected + unparseable + duplicates === seen',
+      );
+      // The pre-fix form stays TRUE whenever there are no duplicates, which is why
+      // this generalises the old invariant instead of replacing it.
+      assert.equal(
+        result.markets.length + rejectedTotal(result.rejected) + result.unparseable,
+        result.seen - result.duplicateMarkets,
+      );
+    });
   });
 });

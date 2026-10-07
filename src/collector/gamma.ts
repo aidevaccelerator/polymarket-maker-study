@@ -214,6 +214,11 @@ export interface DiscoverResult {
   readonly seen: number;
   readonly rejected: Readonly<Record<RejectReason, number>>;
   readonly unparseable: number;
+  // Accepted records that repeated a conditionId already accepted in this scan.
+  // Counted rather than silently dropped: `seen` is every record the scan read,
+  // so `markets.length + rejected + unparseable + duplicateMarkets === seen`, and
+  // the first three alone still sum to `seen` whenever this is 0.
+  readonly duplicateMarkets: number;
 }
 
 function emptyRejected(): Record<RejectReason, number> {
@@ -231,7 +236,13 @@ export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverR
   const rejected = emptyRejected();
   const fetch = opts.fetch ?? fetchJson;
   const pageDelay = opts.pageDelay ?? defaultPageDelay;
-  const accepted: { market: TrackedMarket; liquidityNum: number }[] = [];
+  // Accepted markets keyed by conditionId. The keying IS the de-duplication: a
+  // conditionId repeated within one scan must yield ONE tracked market, not one
+  // per occurrence. The higher-liquidity instance wins, because the sort below
+  // already prefers liquidity; an exact tie keeps the FIRST occurrence, so the
+  // winner never depends on Map iteration order.
+  const accepted = new Map<string, { market: TrackedMarket; liquidityNum: number }>();
+  let duplicateMarkets = 0;
   let seen = 0;
   let unparseable = 0;
   let offset = 0;
@@ -268,19 +279,39 @@ export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverR
           : (categoryIndex.byConditionId.get(candidate.conditionId) ?? '');
       const result = classifyMarket({ ...candidate, category });
       if (result.accept) {
-        accepted.push({ market: result.market, liquidityNum: result.liquidityNum });
+        const incumbent = accepted.get(result.market.conditionId);
+        if (incumbent === undefined) {
+          accepted.set(result.market.conditionId, {
+            market: result.market,
+            liquidityNum: result.liquidityNum,
+          });
+        } else {
+          duplicateMarkets += 1;
+          if (result.liquidityNum > incumbent.liquidityNum) {
+            accepted.set(result.market.conditionId, {
+              market: result.market,
+              liquidityNum: result.liquidityNum,
+            });
+          }
+        }
       } else {
         rejected[result.reason] += 1;
       }
     }
 
-    if (accepted.length >= opts.maxMarkets) break;
+    // `.size`, not a record count: the universe is full when it holds
+    // `maxMarkets` DISTINCT conditions. Counting records would let repeated
+    // conditionIds fill the cap and crowd distinct conditions out of the slice.
+    if (accepted.size >= opts.maxMarkets) break;
     offset += PAGE_SIZE;
     if (offset >= 10 * PAGE_SIZE) break; // hard cap: 1000 scanned
     await pageDelay(PAGE_DELAY_MS);
   }
 
-  accepted.sort((a, b) => b.liquidityNum - a.liquidityNum);
-  const markets = accepted.slice(0, opts.maxMarkets).map((e) => e.market);
-  return { markets, seen, rejected, unparseable };
+  // De-duplicated, then ordered by liquidity, then capped — in that order. With no
+  // duplicates in the scan this is unchanged: Map values come back in first-seen
+  // order and the sort is stable, so the result is identical to the previous array.
+  const ordered = [...accepted.values()].sort((a, b) => b.liquidityNum - a.liquidityNum);
+  const markets = ordered.slice(0, opts.maxMarkets).map((e) => e.market);
+  return { markets, seen, rejected, unparseable, duplicateMarkets };
 }

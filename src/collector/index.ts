@@ -84,9 +84,14 @@ async function main(): Promise<void> {
   try {
     const result = await discoverUniverse({ maxMarkets: args.markets });
     markets = result.markets;
-    gapLog.log('info', `universe: ${markets.length} tracked / ${result.seen} seen / ${result.unparseable} unparseable`, {
-      context: { rejected: result.rejected },
-    });
+    gapLog.log(
+      'info',
+      `universe: ${markets.length} tracked / ${result.seen} seen / ${result.unparseable} unparseable` +
+        ` / ${result.duplicateMarkets} duplicate`,
+      {
+        context: { rejected: result.rejected },
+      },
+    );
   } catch (err) {
     gapLog.logError('universe discovery failed', { context: { error: errToString(err) } });
     // No poller was constructed, so no sweep ran: null, not 0.
