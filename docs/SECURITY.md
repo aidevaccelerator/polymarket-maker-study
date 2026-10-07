@@ -26,9 +26,11 @@ permissions. Treat it as running untrusted code.
    Artifact upload uses the runner's runtime token (not the `GITHUB_TOKEN`), so no
    repo-scoped write credential is ever granted. The workflow has no write access to the
    repository.
-4. **Read-only dataset scope.** The collector only writes to its own local `./data`
-   directory. It has no path to push anything back to the repository, and the dataset it
-   produces is synced out-of-band by the operator.
+4. **Read-only dataset scope.** The collector writes only to its own local working
+   directories: the dataset under `./data`, and a runtime log under `./logs/` (the workflow
+   creates both and tees the collector's stdout/stderr to `logs/collector.log`). It has no
+   path to push anything back to the repository, and the dataset it produces is synced
+   out-of-band by the operator.
 
 ## What cannot be engineered away
 

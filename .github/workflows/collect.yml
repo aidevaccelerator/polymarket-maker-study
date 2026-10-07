@@ -91,14 +91,23 @@ jobs:
       # dataset is far too large for Actions artifacts and would waste quota, so
       # it is NEVER uploaded here — the operator syncs ./data out-of-band with
       # rsync/rclone (see README "Data layout").
-      - name: Upload quality manifest, gaps, and logs
+      - name: Upload quality outputs and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: collector-artifacts
+          # The DIRECTORY, not literal filenames, is deliberate. The collector writes
+          # data/quality/manifest.json and data/quality/gaps-<YYYY-MM-DD>.jsonl, where
+          # the gap log is partitioned by UTC day (src/collector/gaps.ts). The recorder
+          # runs for days at a time and crosses that date boundary daily, so a
+          # hardcoded gaps-<date>.jsonl would stop matching at midnight UTC. Pointing at
+          # the directory keeps matching across days.
           path: |
-            data/quality-manifest.json
-            data/gaps.jsonl
+            data/quality/
             logs/
+          # `warn` stays deliberately: an early crash may legitimately produce no log at
+          # all, and failing hard after a 5-day recording run over a cosmetic path miss
+          # would be worse than a warning. The real fix is the correct path above, not
+          # louder failure.
           if-no-files-found: warn
           retention-days: 30
