@@ -48,7 +48,7 @@ npm run analyze             # after data has accumulated: emit report + verdict
 
 `collect:probe` connects to the feed and validates the output schema without writing to the dataset: it opens no websocket and writes no parquet, but it does append to `data/quality/gaps-YYYY-MM-DD.jsonl` and overwrite `data/quality/manifest.json` — run it first to confirm the environment works. `collect` records continuously. `analyze` reads whatever has been recorded and emits `reports/analysis.md` (Markdown) and `reports/summary.json` (JSON); it exits 1 if the dataset is empty or unusable. Both paths are overridable with `--data-dir` / `--out-dir`, and `--from` / `--to` bound the time window.
 
-`build` and `test` cover the shared contract and the collector (`src/shared`, `src/collector`) at full strictness — 6 test files, 27 tests. Use `build:all` / `test:all` to include `src/analysis` as well — 15 test files, 79 tests. They are separate so that a half-finished change in the analysis code cannot turn the collector's own build and tests red. `test:all` is the only script that covers the analysis half.
+`build` and `test` cover the shared contract and the collector (`src/shared`, `src/collector`) at full strictness — 6 test files, 27 tests. Use `build:all` / `test:all` to include `src/analysis` as well — 15 test files, 83 tests. They are separate so that a half-finished change in the analysis code cannot turn the collector's own build and tests red. `test:all` is the only script that covers the analysis half.
 
 Tests run against compiled output in `dist/`, so a build must precede them. `npm test` and `npm run test:all` each have a `pretest` hook that builds first, so neither can run against a stale or missing `dist/`. Both go through `scripts/run-tests.mjs`, which refuses to report a green when a test source has no emitted test file, when no test files exist at all, or when the aggregate test count disagrees with the sum of the per-file counts.
 
@@ -89,7 +89,7 @@ The operator splits time between two countries, which is the deciding factor: a 
 
 ```
 .github/workflows/collect.yml   # 24/7 recorder (self-hosted; builds, then records — runs no tests)
-.github/workflows/analyze.yml   # nightly batch (hosted; builds and runs the full 79-test suite)
+.github/workflows/analyze.yml   # nightly batch (hosted; builds and runs the full 83-test suite)
 docs/SECURITY.md                # self-hosted runner trust model (read before running)
 docs/THRESHOLDS.md              # pre-registration record (the credibility backbone)
 src/shared/                     # shared constants + threshold values

@@ -148,6 +148,31 @@ export function markoutAtHorizon(
  * Weighted percentile distribution over samples. `weights` are fill fractions so
  * partial/median-model fills contribute proportionally. Uses nearest-rank
  * quantiles (smallest value whose cumulative weight reaches q * totalWeight).
+ *
+ * WHAT `n` MEANS. `n` is `values.length` — the count of samples SUPPLIED, not the
+ * count that contributed to the percentiles. Those differ whenever a supplied
+ * weight fails `w > 0`, because such a sample is skipped for the quantiles but
+ * still counted in `n`. So `n` can exceed the contributing count. The two are equal
+ * in practice only because every supplied weight is defined and strictly positive,
+ * which the sole production caller guarantees: `src/analysis/index.ts` skips
+ * `fillFraction <= 0` BEFORE the adjacent `acc.values.push(adv)` /
+ * `acc.weights.push(outcome.fillFraction)`, so both arrays stay the same length
+ * with every weight positive. That guard is the invariant; this function does not
+ * enforce it, and `distribution()` satisfies it trivially by supplying weight 1.
+ * Pinned by tests in `markout.test.ts`.
+ *
+ * `n` is deliberately NOT `pairs.length`. The two are numerically identical for
+ * every current caller, but `n` here means "samples offered", so switching to
+ * `pairs.length` would silently redefine the number that `distribution()` and every
+ * report reader already interpret as a plain sample count.
+ *
+ * HAZARD: a NaN weight is NOT filtered. `NaN <= 0` is false, so such a sample is
+ * INCLUDED, `totalWeight` becomes NaN, and both `mean` and every quantile fall
+ * through to the last sorted value. The guards here do not prevent that; what
+ * prevents it is upstream — `asNumber` in `src/analysis/parquetRead.ts` returns a
+ * finite fallback for `size`/`queueAhead`, and every division in
+ * `src/analysis/queueModels.ts` is guarded, so `fillFraction` is always finite and
+ * in [0, 1]. That is the more fragile place to rely on, so it is recorded here.
  */
 export function weightedDistribution(values: number[], weights: number[]): Distribution | null {
   if (values.length === 0) return null;

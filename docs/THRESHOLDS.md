@@ -99,6 +99,33 @@ support.
 `mean`, `p10`, `p25`, `p50`, `p75`, `p90`, `n`, and weighted `n`. The verdict reads `p50`
 only; every other figure is context.
 
+### The gate counts fills; `n` counts samples that produced a markout
+
+These are two different counts, and the report prints both. Conflating them overstates the
+evidence behind the headline.
+
+- The **gate** (`MIN_FILLS_FOR_VERDICT = 100`) counts **pessimistic fills**. A fill is
+  counted purely on the queue model: the touch cleared `queueAhead` and left a positive
+  fill fraction. It requires no mid observation.
+- The **`n`** printed beside each distribution counts **samples that produced a markout at
+  that horizon** — a fill that additionally had a mid observation at or before the horizon,
+  and a parseable timestamp.
+
+They are equal only when every pessimistic fill has a mid at or before the horizon. They
+differ whenever a fill has no mid at that horizon, and the gap grows with the horizon: a
+fill with no mid within +30s can still have one within +60s, so `n` at +60s is the further
+from the fill count of the two. The verdict's p50 is read at +30s, so in general **the p50
+the verdict acts on may rest on fewer samples than the fill count that authorised it** —
+the count gate can be satisfied while the median behind it rests on a smaller set.
+
+**So judge the +30s p50 by the `n` printed beside it, not by the fill count.** This is the
+same instruction the amendment log gives ("a result near the 1.3¢ line must be read with the
+reported `n` and percentiles beside it") and the one `README.md` "Honesty" repeats; it is
+stated here because the fill count appears in the report too, under Data coverage as
+"pessimistic fills", and it is the one that is easier to mistake for the sample size.
+`nWeighted`, printed as `w=`, is a further quantity still: a sum of fill fractions, so it
+can be smaller than `n` whenever fills are partial.
+
 ## Verdict vocabulary
 
 The outcome names below are exactly the five the code emits
@@ -141,6 +168,37 @@ Worked example, checkable against any report: pess 1.2¢, med 1.2¢, taker share
 fills reports `pessimistic_median_markout_fail` PASS, `median_model_median_markout_fail`
 PASS, `pessimistic_marginal_band` FAIL, `pessimistic_pass` FAIL, `taker_share_floor` PASS,
 `overall` `MARGINAL`. Every rule is always reported, so none masks another.
+
+### The taker-share measurement is biased upward, so it can mask a genuine failure
+
+`taker_share_floor` (`FAIL_TAKER_SHARE` when measured taker share `< 0.5`) is the one rule
+whose measurement can be biased **toward the value that would make it pass**. The ratio is
+measured as `T = sum(QuoteTouch.size)` and `M = sum over touches of min(size, resting size
+at the touch price in the referenced book)`, and M is undercounted in two ways the code
+already detects and warns about:
+
+- the touch references a **missing book snapshot**, so no resting size can be read at all;
+- the referenced book has **no resting size at the touch price**, so `resting` is 0.
+
+In both cases the touch's full size is still added to T while nothing is added to M. That
+pushes `T/(T+M)` **upward, toward 1.0** — away from the rule's own failure condition, not
+toward it. A genuinely low taker share that happens to coincide with missing or unmatched
+book depth can therefore be reported above 0.5, and the rule will read `PASS` when the
+underlying economics would have failed. This is a limitation of the measurement rather than
+a choice: the book depth this study collects is not sufficient to make M exact, and the
+floor is not being adjusted to compensate.
+
+**Treat this rule as the least reliable of the five whenever its bias warnings are present.**
+The analysis emits a warning for exactly these two conditions, one per affected touch count,
+under "Taker share T/(M+T)" in the report, and the per-market table flags affected markets
+with a `bias warning(s)` note. That warning text sits in that section, several headings below
+the `Overall verdict` and the rules table, and the per-market detail is reduced to a count —
+so a report showing `overall: PASS` will **not** visually flag that the `taker_share_floor`
+row was reached by a measurement with a known upward bias. This does not automatically
+overturn the other four rules, which are thresholded against directly measured per-share
+markout; it does mean a `PASS` on this rule is weaker evidence than a `PASS` on rules 1–4.
+The measurement is not changed here: altering it would change a reported statistic, and
+moving `TAKER_SHARE_FLOOR` would amend a pre-registered value.
 
 ## Model parameters fixed in code
 

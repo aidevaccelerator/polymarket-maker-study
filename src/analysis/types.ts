@@ -60,7 +60,7 @@ export interface MarkoutSample {
 
 /** A percentile summary of adverseCents (or any numeric metric). */
 export interface Distribution {
-  /** Number of (unweighted) samples. */
+  /** Count of samples supplied; equals the contributing count only if all weights are > 0 and defined. */
   n: number;
   /** Sum of weights (effective sample count). */
   nWeighted: number;
