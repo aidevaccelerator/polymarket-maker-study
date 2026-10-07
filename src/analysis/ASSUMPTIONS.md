@@ -271,8 +271,8 @@ node scripts/run-tests.mjs dist/analysis
 
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
-**Note on scope:** `npm test` runs **only** the shared + collector tests (7 files,
-29 tests). It does **not** touch this half. Only `npm run test:all` (16 files, 91
+**Note on scope:** `npm test` runs **only** the shared + collector tests (8 files,
+43 tests). It does **not** touch this half. Only `npm run test:all` (17 files, 105
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 29 across 7 files; analysis 62 across
-9 files; total 91 across 16 files.
+Current per-file counts: shared + collector 43 across 8 files; analysis 62 across
+9 files; total 105 across 17 files.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test
@@ -340,6 +340,39 @@ is untouched.
   (`bestPrice * bestSize`) as a proxy for market liquidity, because the schema
   carries no aggregate depth. Touches with no book snapshot to measure are
   **kept**, not dropped, so the filter can only under-count exclusions.
+
+**UPDATE 2026-10-07 — a malformed `/book` response is recorded; an empty book is
+not.** `bookPoller.ts` parsed a CLOB `/book` body into a `BookSnapshot` or `null`,
+and `pollOne` returned on that `null` under the comment "empty/unsupported book;
+not an error". That comment was wrong in both halves, which is what made the defect
+invisible. `null` never meant empty: `parseLevels([])` returns `[]`, so an empty
+book was already a valid snapshot and was written like any other. `null` meant
+**malformed** — `bids` or `asks` not an array, a level that is not a record, or a
+single level whose `price` or `size` does not parse, any of which discards the
+whole book because one bad side is not a partial book. Since `onError` was reached
+only from the `catch` around the fetch, a `null` bypassed it entirely: no book was
+written and no gap-log line was produced. If Polymarket renamed a field, changed a
+type, or added a nesting level, every market would be discarded on every poll, the
+dataset would be empty or partial, and the report would look clean with a
+`gapsCount` that does not include it. Malformed responses now reach `onError` and
+land in the append-only gap log, with the failing side named. Empty books are
+unchanged: still valid, still written, still not an error. Pinned by
+`src/collector/bookPoller.test.ts`, which includes the empty-book case as an
+explicit regression guard.
+
+**Rate limit on that report, and why it is edge-triggered.** The poller runs every
+5s across ~30 markets, so a permanently malformed market would otherwise write
+~17,280 gap lines/day (86,400/5) — enough to bury the durable audit log and the
+uploaded `collector-artifacts` gap files under one repeating message, which is how
+a real problem becomes invisible. Reporting is therefore tracked per conditionId
+and fires on state transition: the first failure is always recorded, repeats are
+suppressed, and a successfully parsed book clears the flag so a later failure is
+recorded again as the distinct incident it is. That bounds the log to one entry per
+contiguous failure episode — the unit an auditor wants — without ever collapsing
+two episodes into one, and it needs no clock, so it is deterministic. A
+time-window throttle was rejected: it needs a clock seam to test and still writes
+thousands of lines over a 30-day run. Transport failures are deliberately NOT
+suppressed; that path is unchanged from before.
 
 **KNOWN GAP 2026-10-07 — there is no automatic missing-sample check on the
 verdict.** `CoverageReport.missingFraction` and its `>= 30%` warning are inert,

@@ -14,6 +14,16 @@ export class HttpError extends Error {
   }
 }
 
+// A /book response that did not parse into a BookSnapshot. Distinct from a
+// transport failure (HttpError) and from an EMPTY book, which is a valid
+// snapshot with zero levels and is never an error.
+export class MalformedBookError extends Error {
+  override readonly name = 'MalformedBookError';
+  constructor(message: string) {
+    super(`malformed /book response: ${message}`);
+  }
+}
+
 export class WsError extends Error {
   override readonly name = 'WsError';
   constructor(
