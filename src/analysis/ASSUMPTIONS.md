@@ -271,8 +271,8 @@ node scripts/run-tests.mjs dist/analysis
 
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
-**Note on scope:** `npm test` runs **only** the shared + collector tests (8 files,
-43 tests). It does **not** touch this half. Only `npm run test:all` (17 files, 105
+**Note on scope:** `npm test` runs **only** the shared + collector tests (9 files,
+49 tests). It does **not** touch this half. Only `npm run test:all` (18 files, 111
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 43 across 8 files; analysis 62 across
-9 files; total 105 across 17 files.
+Current per-file counts: shared + collector 49 across 9 files; analysis 62 across
+9 files; total 111 across 18 files.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test
@@ -373,6 +373,39 @@ two episodes into one, and it needs no clock, so it is deterministic. A
 time-window throttle was rejected: it needs a clock seam to test and still writes
 thousands of lines over a 30-day run. Transport failures are deliberately NOT
 suppressed; that path is unchanged from before.
+
+**UPDATE 2026-10-07 — the websocket reconnect backoff resets only after a
+connection proves stable.** Same visibility concern as the two entries above, one
+layer down: they govern how many gap lines a *malformed payload* produces, this
+governs how many a *transport* produces. `ws.ts` drove exponential backoff
+(1s base, doubling, 60s cap, jittered) from a single `attempt` counter, and reset
+that counter to 0 unconditionally in the `open` handler. A completed handshake
+proves the endpoint accepted us and nothing more, so an endpoint that accepts and
+then promptly closes — server-side rate limiting, an aggressive idle timeout, or
+an intercepting middlebox producing the same signature — got the base delay on
+every cycle: roughly one reconnect per second, indefinitely, across the 30-day
+run, each cycle also appending a paired disconnect/reconnect entry to the gap log.
+That is the same failure mode as the ~17,280 lines/day figure above, reached
+without any malformed data at all. **Whether Polymarket's endpoint actually flaps
+this way is UNVERIFIED** — the previous 30-day run never exercised this path
+against the live endpoint, so this is a robustness fix, not an observed incident.
+
+The reset is now deferred to a 30s stability window: a connection must outlive
+`STABLE_CONNECTION_MS` before the backoff is zeroed, and the timer is cleared on
+both `close` and `close()` so a 30-day run does not accumulate one live timer per
+reconnect. Deleting the reset outright was rejected, because that reset is what
+lets a genuinely long-lived connection reconnect at the base delay after a real
+outage instead of arriving at the outage already backed off to the 60s cap — the
+window is what keeps both properties, since a flapping endpoint never reaches it
+and a healthy one reaches it within seconds of connecting. The delay computation
+itself is unchanged (base, doubling, cap and jitter all identical); it moved into
+an exported pure helper, `nextBackoffDelayMs`, so the schedule is directly
+testable, and the subscription chunking, ping cadence, message parsing and the
+disconnect/reconnect gap events are untouched. Note the coverage boundary recorded
+at the top of `src/collector/ws.test.ts`: that file pins the delay schedule and
+does **not** pin the reset-on-open wiring, which would require opening a real
+socket or widening the class's injection surface. `gaps.ts` consumers are
+unaffected — the gap events are byte-identical in shape.
 
 **KNOWN GAP 2026-10-07 — there is no automatic missing-sample check on the
 verdict.** `CoverageReport.missingFraction` and its `>= 30%` warning are inert,

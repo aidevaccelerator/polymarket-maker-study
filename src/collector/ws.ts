@@ -14,6 +14,38 @@ const PING_INTERVAL_MS = 20_000;
 const MAX_BACKOFF_MS = 60_000;
 const BASE_BACKOFF_MS = 1_000;
 
+// How long a connection must stay open before the reconnect backoff is reset.
+// See `nextBackoffDelayMs` and the comment on the 'open' handler.
+//
+// Why the reset is not simply done on 'open': a completed handshake proves the
+// endpoint accepted us, and nothing more. If an endpoint accepts and then
+// promptly closes — server-side rate limiting, an aggressive idle timeout, or an
+// intercepting middlebox / captive portal producing the same signature — then
+// resetting on every open restarts the backoff at the 1s base on every cycle.
+// That is roughly one reconnect per second, indefinitely, across a 30-day
+// unattended run, and each cycle additionally writes a paired disconnect /
+// reconnect entry into the durable gap log. Whether Polymarket's endpoint
+// actually flaps this way is UNVERIFIED: the previous 30-day run never exercised
+// this path against the live endpoint.
+//
+// Why the reset is not simply removed either: the reset is what lets a
+// genuinely long-lived connection reconnect at the base delay after a real
+// outage, instead of arriving at the outage already backed off to the 60s cap.
+// Both behaviours are wanted, and the window is what separates them — a
+// flapping endpoint never reaches the window and keeps escalating, a healthy
+// one reaches it within seconds of connecting and recovers fast.
+//
+// 30s is chosen to exceed PING_INTERVAL_MS (20s), so "stable" means the
+// connection has survived at least one full client ping round-trip and is
+// demonstrably carrying traffic, rather than merely having completed a
+// handshake. It is also orders of magnitude above CHUNK_DELAY_MS (120ms per
+// 64-token chunk), so subscription has long since finished when the window
+// elapses. The window is deliberately biased long because the two errors are not
+// symmetric: too short reintroduces the reconnect storm, whereas too long costs
+// at most one extra backoff step, and only for a connection that dies between
+// 20s and 30s old.
+const STABLE_CONNECTION_MS = 30_000;
+
 export interface WsToken {
   readonly conditionId: string;
   readonly tokenId: string;
@@ -55,10 +87,26 @@ function tryParseJson(text: string): unknown {
   }
 }
 
+/**
+ * Reconnect delay in ms for the given 1-based `attempt`, jittered over the top
+ * half of the window so a fleet of collectors does not resynchronise on retries.
+ *
+ * Exported purely so the schedule is directly testable. `PriceWs` constructs a
+ * real `WebSocket` in connect(), so the class cannot be driven without opening a
+ * network connection; this function is the whole of the delay computation and
+ * touches no instance state.
+ */
+export function nextBackoffDelayMs(attempt: number): number {
+  const exp = BASE_BACKOFF_MS * 2 ** (attempt - 1);
+  const cap = Math.min(exp, MAX_BACKOFF_MS);
+  return cap / 2 + Math.random() * (cap / 2);
+}
+
 export class PriceWs {
   private readonly tokenByAssetId = new Map<string, WsToken>();
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private stabilityTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private attempt = 0;
   private ridCounter = 0;
@@ -80,6 +128,7 @@ export class PriceWs {
   close(): void {
     this.closed = true;
     this.stopPing();
+    this.clearStabilityTimer();
     if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.ws !== null) {
@@ -95,7 +144,12 @@ export class PriceWs {
     this.ws = ws;
 
     ws.on('open', () => {
-      this.attempt = 0;
+      // NOT `this.attempt = 0`. The backoff is reset by the stability timer
+      // below only once this connection has outlived STABLE_CONNECTION_MS, so a
+      // connection that opens and closes promptly keeps the escalating backoff
+      // it earned instead of handing itself the 1s base again. See the constant's
+      // comment for why neither resetting here nor never resetting is correct.
+      this.armStabilityTimer();
       if (this.disconnectedAt !== null) {
         const downtimeSec = (Date.now() - this.disconnectedAt) / 1000;
         this.disconnectedAt = null;
@@ -116,6 +170,7 @@ export class PriceWs {
 
     ws.on('close', (code: number, reason: Buffer) => {
       this.stopPing();
+      this.clearStabilityTimer();
       this.ws = null;
       if (this.closed) return;
       const reasonText = reason.toString();
@@ -167,14 +222,28 @@ export class PriceWs {
     this.pingTimer = null;
   }
 
+  private armStabilityTimer(): void {
+    this.clearStabilityTimer();
+    this.stabilityTimer = setTimeout(() => {
+      this.stabilityTimer = null;
+      this.attempt = 0;
+    }, STABLE_CONNECTION_MS);
+  }
+
+  // Called from BOTH the 'close' handler and close(). Without it a 30-day run
+  // accumulates one live timer per reconnect, and a connection that closes would
+  // still fire a reset afterwards — silently zeroing the backoff of the
+  // connection that replaced it, which is the exact defect this file fixes.
+  private clearStabilityTimer(): void {
+    if (this.stabilityTimer !== null) clearTimeout(this.stabilityTimer);
+    this.stabilityTimer = null;
+  }
+
   private scheduleReconnect(): void {
     this.attempt += 1;
-    const exp = BASE_BACKOFF_MS * 2 ** (this.attempt - 1);
-    const cap = Math.min(exp, MAX_BACKOFF_MS);
-    const delay = cap / 2 + Math.random() * (cap / 2);
     this.reconnectTimer = setTimeout(() => {
       this.connect();
-    }, delay);
+    }, nextBackoffDelayMs(this.attempt));
   }
 
   private handleMessage(data: RawData): void {
