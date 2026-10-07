@@ -25,6 +25,22 @@ import { fetchJson } from './http.js';
 import { isRecord } from '../shared/parse.js';
 import { ALLOWED_CATEGORIES } from '../shared/config.js';
 
+// The raw, unparsed event body — the same seam `RawBookFetcher` introduced for
+// BookPoller in b7a7b2d, for the same reason: injecting a pre-built
+// `CategoryIndex` would bypass URL construction, the offset arithmetic, the page
+// cap and the tag rule, which is the logic worth testing. The seam sits BELOW the
+// parsing. `PageDelay` neutralises the inter-page pause so a test can walk the
+// real page cap without paying wall-clock time; it asserts the ms VALUE handed to
+// it against the constant, never an elapsed measurement.
+export type RawJsonFetcher = (url: string) => Promise<unknown>;
+
+export type PageDelay = (ms: number) => Promise<void>;
+
+// Both defaults below are the production values, so a caller that passes neither
+// performs exactly the work it always did.
+export const defaultPageDelay: PageDelay = (ms) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 const EVENTS_PAGE_SIZE = 50;
 const EVENTS_PAGE_DELAY_MS = 60;
@@ -57,6 +73,8 @@ export interface CategoryIndex {
 
 export interface CategoryIndexOptions {
   readonly maxPages?: number;
+  readonly fetch?: RawJsonFetcher;
+  readonly pageDelay?: PageDelay;
 }
 
 export interface EventCategory {
@@ -89,6 +107,8 @@ export async function fetchCategoryIndex(
   opts: CategoryIndexOptions = {},
 ): Promise<CategoryIndex> {
   const maxPages = opts.maxPages ?? MAX_EVENT_PAGES;
+  const fetch = opts.fetch ?? fetchJson;
+  const pageDelay = opts.pageDelay ?? defaultPageDelay;
   const byConditionId = new Map<string, string>();
   let eventsScanned = 0;
   let eventsInAllowedCategory = 0;
@@ -99,7 +119,7 @@ export async function fetchCategoryIndex(
     const url =
       `${GAMMA_BASE}/events?closed=false&active=true` +
       `&limit=${EVENTS_PAGE_SIZE}&offset=${offset}`;
-    const body = await fetchJson(url);
+    const body = await fetch(url);
     if (!Array.isArray(body) || body.length === 0) break;
     eventsScanned += body.length;
 
@@ -116,7 +136,7 @@ export async function fetchCategoryIndex(
       }
     }
 
-    await new Promise((r) => setTimeout(r, EVENTS_PAGE_DELAY_MS));
+    await pageDelay(EVENTS_PAGE_DELAY_MS);
   }
 
   return { byConditionId, eventsScanned, eventsInAllowedCategory, marketsIndexed };

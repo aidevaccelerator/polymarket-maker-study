@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-68 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 130
+96 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 158
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,26 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 68 across 10 files; analysis 62 across
-9 files; total 130 across 19 files.
+Current per-file counts: shared + collector 96 across 10 files; analysis 62 across
+9 files; total 158 across 19 files.
+
+**UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
+universe-discovery path — market parsing, category resolution from parent-event
+`tags[]`, the pre-registered price/spread/liquidity filters, the accept/reject
+accounting, and pagination — reached the network directly and so had no offline
+coverage; it was previously exercised only through `classifyMarket` and
+`categoriesFromEvent`, which are pure helpers and cover only part of it.
+`discoverUniverse` and `fetchCategoryIndex` now take an optional injectable fetcher
+at the `fetchJson` boundary, following the `RawBookFetcher` pattern added for
+`BookPoller` in b7a7b2d. The seam sits BELOW the parsing, so the URL construction,
+pagination bounds, delay, parsing and filtering all execute for real in tests
+rather than being stubbed around; the default delegates to the unchanged
+`fetchJson`. That is why the counts above rise by 28 and the file counts do not
+change at all: `src/collector/gamma.test.ts` and `src/collector/categories.test.ts`
+were extended, not added. **Zero behaviour change** — `src/collector/index.ts` is
+untouched, `collect:probe` still fetches live and still writes `data/quality/`,
+and no threshold, URL, page cap, delay, verdict rule or `VERDICT_VERSION` moved.
+See `docs/THRESHOLDS.md` for the thresholds themselves.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test

@@ -3,7 +3,8 @@
 
 import { fetchJson } from './http.js';
 import { asString, isRecord, numberOrNull } from '../shared/parse.js';
-import { fetchCategoryIndex } from './categories.js';
+import { defaultPageDelay, fetchCategoryIndex } from './categories.js';
+import type { PageDelay, RawJsonFetcher } from './categories.js';
 import {
   ALLOWED_CATEGORIES,
   MAX_PROB,
@@ -200,6 +201,12 @@ export function parseCandidate(input: unknown): UniverseCandidate | null {
 
 export interface DiscoverOptions {
   readonly maxMarkets: number;
+  // Injection seams, both defaulting to the production values — see the comment on
+  // `RawJsonFetcher` in categories.ts. The injected body is RAW, so URL
+  // construction, parsing, classification, filtering and pagination all run for
+  // real inside the test. `maxMarkets` is the only option production passes.
+  readonly fetch?: RawJsonFetcher;
+  readonly pageDelay?: PageDelay;
 }
 
 export interface DiscoverResult {
@@ -222,6 +229,8 @@ function emptyRejected(): Record<RejectReason, number> {
 
 export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverResult> {
   const rejected = emptyRejected();
+  const fetch = opts.fetch ?? fetchJson;
+  const pageDelay = opts.pageDelay ?? defaultPageDelay;
   const accepted: { market: TrackedMarket; liquidityNum: number }[] = [];
   let seen = 0;
   let unparseable = 0;
@@ -230,7 +239,7 @@ export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverR
   // Category comes from the parent EVENT's tags: `/markets` records carry a
   // null `category` and no `tags` key, so without this index every market is
   // rejected on category and the universe is always empty. Built once per run.
-  const categoryIndex = await fetchCategoryIndex();
+  const categoryIndex = await fetchCategoryIndex({ fetch, pageDelay });
 
   // Rate budget: /markets is limited to 300 req/10s. Discovery paginates with
   // a small inter-page delay and stops as soon as the accepted set is full;
@@ -240,7 +249,7 @@ export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverR
       `${GAMMA_BASE}/markets?closed=false&active=true` +
       `&liquidity_num_min=${MIN_LIQUIDITY_USD}` +
       `&limit=${PAGE_SIZE}&offset=${offset}`;
-    const body = await fetchJson(url);
+    const body = await fetch(url);
     if (!Array.isArray(body)) break;
 
     if (body.length === 0) break;
@@ -268,7 +277,7 @@ export async function discoverUniverse(opts: DiscoverOptions): Promise<DiscoverR
     if (accepted.length >= opts.maxMarkets) break;
     offset += PAGE_SIZE;
     if (offset >= 10 * PAGE_SIZE) break; // hard cap: 1000 scanned
-    await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
+    await pageDelay(PAGE_DELAY_MS);
   }
 
   accepted.sort((a, b) => b.liquidityNum - a.liquidityNum);
