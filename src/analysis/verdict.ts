@@ -171,10 +171,21 @@ export function evaluateVerdict(input: VerdictInput, now: Date = new Date()): Ve
   // Statistical-confidence gate.
   const insufficient = pess === null || n < MIN_FILLS_FOR_VERDICT;
   if (insufficient) {
-    reasons.push(
-      `insufficient data for a verdict: pessimistic fill sample size = ${n} (need >= ${MIN_FILLS_FOR_VERDICT})` +
-        (pess === null ? ', and no median was computable.' : '.'),
-    );
+    if (pess !== null) {
+      reasons.push(
+        `insufficient data for a verdict: pessimistic fill sample size = ${n} (need >= ${MIN_FILLS_FOR_VERDICT}).`,
+      );
+    } else if (n >= MIN_FILLS_FOR_VERDICT) {
+      // The count gate passed; the missing median is the sole reason here, so the
+      // count must be reported as satisfied rather than as an unmet "(need >= N)".
+      reasons.push(
+        `insufficient data for a verdict: no pessimistic median was computable, although the pessimistic fill sample size = ${n} meets the >= ${MIN_FILLS_FOR_VERDICT} requirement.`,
+      );
+    } else {
+      reasons.push(
+        `insufficient data for a verdict: pessimistic fill sample size = ${n} (need >= ${MIN_FILLS_FOR_VERDICT}), and no median was computable.`,
+      );
+    }
   }
 
   // Combine into a single headline. Every rule is still reported above, so no

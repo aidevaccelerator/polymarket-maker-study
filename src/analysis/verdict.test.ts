@@ -67,6 +67,26 @@ test('INSUFFICIENT_DATA when the pessimistic median is unavailable', () => {
   assert.equal(v.overall, 'INSUFFICIENT_DATA');
 });
 
+test('INSUFFICIENT_DATA reason reports the count as met when only the median is missing', () => {
+  // 150 clears MIN_FILLS_FOR_VERDICT, so the count gate passes and the absent
+  // median is the sole reason. The reason must not restate the count as unmet.
+  const v = evaluateVerdict(
+    make({ pessimisticMedianAdverseCents: null, pessimisticFillCount: 150 }),
+  );
+  assert.equal(v.overall, 'INSUFFICIENT_DATA');
+
+  const reason = v.reasons.find((r) => r.startsWith('insufficient data for a verdict'));
+  assert.ok(reason, 'expected an insufficient-data reason');
+  assert.ok(
+    reason.includes(`sample size = 150 meets the >= ${MIN_FILLS_FOR_VERDICT} requirement`),
+    `expected the count reported as satisfied, got: ${reason}`,
+  );
+  assert.ok(
+    !reason.includes(`(need >= ${MIN_FILLS_FOR_VERDICT})`),
+    `must not report a satisfied count as an unmet requirement, got: ${reason}`,
+  );
+});
+
 test('all rules are reported regardless of the overall verdict', () => {
   const v = evaluateVerdict(make({ pessimisticMedianAdverseCents: 1.5, takerShare: 0.4 }));
   const ids = v.rules.map((r) => r.id);
