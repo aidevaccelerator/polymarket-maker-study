@@ -271,8 +271,8 @@ node scripts/run-tests.mjs dist/analysis
 
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
-**Note on scope:** `npm test` runs **only** the shared + collector tests (9 files,
-49 tests). It does **not** touch this half. Only `npm run test:all` (18 files, 111
+**Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
+63 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 125
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 49 across 9 files; analysis 62 across
-9 files; total 111 across 18 files.
+Current per-file counts: shared + collector 63 across 10 files; analysis 62 across
+9 files; total 125 across 19 files.
 
 **UPDATE 2026-10-07 — CI now runs the full suite.** `.github/workflows/analyze.yml`
 previously ran the collector-scoped `npm test`, which meant the analysis test

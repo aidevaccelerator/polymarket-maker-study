@@ -15,14 +15,42 @@ const MARKET: TrackedMarket = {
 
 const SECOND_MARKET: TrackedMarket = { ...MARKET, conditionId: '0xc2', tokenId: 'tk2' };
 
-// Shaped like the live CLOB response: prices and sizes arrive as numeric STRINGS,
-// which `numberOrNull` coerces.
+// Shaped like the live CLOB response, transcribed from a read-only probe of
+// https://clob.polymarket.com/book on 2026-10-07. Two details matter and both
+// differ from what this fixture used to assert:
+//
+//  1. `timestamp` is a 13-digit millisecond STRING ("1791401045758"), not an
+//     ISO string. That is the real format, and it routes through the
+//     `/^\d+$/` branch of `normalizeTs` rather than `new Date()`. The old ISO
+//     fixture covered the branch production does not use.
+//  2. `bids` arrive ASCENDING and `asks` DESCENDING — the reverse of what
+//     `parseBook` wants. `parseBook` re-sorts, so this now genuinely exercises
+//     that re-sort instead of sorting already-sorted input.
+//
+// `market`, `neg_risk` and the other real keys are included because they are
+// simply present upstream; `parseBook` ignores them, so they cost nothing and
+// keep the fixture faithful. The timestamp is a fixed literal, never derived
+// from the clock, so expectations stay deterministic.
 const GOOD_BODY = {
-  timestamp: '2024-01-02T00:00:00.000Z',
-  bids: [{ price: '0.49', size: '100' }],
-  asks: [{ price: '0.51', size: '200' }],
+  market: '0xc1',
+  asset_id: 'tk1',
+  timestamp: '1791401045758',
+  hash: '0xbookhash',
+  bids: [
+    { price: '0.47', size: '40' },
+    { price: '0.48', size: '30' },
+    { price: '0.49', size: '100' },
+  ],
+  // Descending, as the live endpoint sends them.
+  asks: [
+    { price: '0.53', size: '300' },
+    { price: '0.52', size: '150' },
+    { price: '0.51', size: '200' },
+  ],
   tick_size: '0.01',
   min_order_size: '5',
+  neg_risk: false,
+  last_trade_price: '0.50',
 };
 
 const EMPTY_BODY = { ...GOOD_BODY, bids: [], asks: [] };
@@ -172,19 +200,13 @@ describe('BookPoller /book parsing', () => {
     assert.equal(recorded.touches[0]?.price, 0.51);
   });
 
-  it('still writes a valid book exactly as before, best levels first', async () => {
+  // The live endpoint sends bids ASCENDING and asks DESCENDING, so GOOD_BODY now
+  // arrives in exactly that order and this asserts the emitted snapshot is
+  // re-sorted: bids descending, asks ascending. Sorting already-sorted input was
+  // a no-op, so the re-sort was never actually exercised.
+  it('re-sorts the reversed level order the live endpoint sends, best levels first', async () => {
     const { poller, recorded, bodies } = harness();
-    bodies.push({
-      ...GOOD_BODY,
-      bids: [
-        { price: '0.48', size: '10' },
-        { price: '0.49', size: '100' },
-      ],
-      asks: [
-        { price: '0.52', size: '300' },
-        { price: '0.51', size: '200' },
-      ],
-    });
+    bodies.push(GOOD_BODY);
 
     await poller.pollAll();
 
@@ -194,9 +216,21 @@ describe('BookPoller /book parsing', () => {
     // levels[0] is what the liquidity filter reads, so ordering is load-bearing.
     assert.deepEqual(book?.bids[0], [0.49, 100]);
     assert.deepEqual(book?.asks[0], [0.51, 200]);
+    // The whole side, not just the head, so a partial sort cannot pass.
+    assert.deepEqual(book?.bids, [
+      [0.49, 100],
+      [0.48, 30],
+      [0.47, 40],
+    ]);
+    assert.deepEqual(book?.asks, [
+      [0.51, 200],
+      [0.52, 150],
+      [0.53, 300],
+    ]);
     assert.equal(book?.tickSize, 0.01);
     assert.equal(book?.minOrderSize, 5);
-    assert.equal(book?.ts, '2024-01-02T00:00:00.000Z');
+    // The millisecond-string timestamp is what production reads.
+    assert.equal(book?.ts, '2026-10-07T19:24:05.758Z');
   });
 
   it('reports a transport failure on every poll, unsuppressed', async () => {
