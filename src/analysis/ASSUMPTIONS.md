@@ -480,6 +480,31 @@ differing liquidity, two named filter rejections and two unreadable records —
 with the exact per-bucket counts asserted so a regression in any single bucket is
 visible rather than masked by the sum still working out.
 
+**PROBE 2026-10-07 — UNVERIFIED: no `conditionId` repeated across the live
+offset pages sampled.** The "UNVERIFIED and not expected" claim above was closed
+against the live endpoint, not left as reasoning. Probed the exact URL
+`discoverUniverse` builds — `https://gamma-api.polymarket.com/markets?closed=false&active=true&liquidity_num_min=25000&limit=100&offset=N`,
+unauthenticated, with `liquidity_num_min` taken from `MIN_LIQUIDITY_USD` — at
+offsets 0, 100, 200, 300, 400, 500, 600 and 700: 8 pages, 800 records, every page
+returning HTTP 200 with exactly 100 records. All 800 records carried a non-empty
+`conditionId`, and the 800 were 800 **distinct** ids: zero repeats, within a page
+or across pages. The category, probability and spread gates are applied
+in-process after the fetch and cannot affect whether the endpoint repeats ids, so
+they are out of scope for this probe.
+
+This is a negative result on one sample and nothing more. It does **not** prove
+that Gamma's offset pagination never repeats a `conditionId`: 8 offsets is a
+fraction of the ~1000-record hard cap the scan uses, pagination order was not
+captured across the probe (the ids were re-derived only from this single
+2026-10-07 run), and a repeat driven by a concurrent write mid-pagination would
+not be expected to reproduce on a re-probe. The de-dup in `discoverUniverse` is
+therefore still a latent robustness guard against an unobserved condition, exactly
+as the entry above describes it — the 20-duplicate-entry observation that
+motivated the change came from a built `dist` against a different read path, not
+from this endpoint, and this probe neither confirms nor refutes that path. What it
+does establish is that the guard is not currently masking live traffic: on the
+sampled pages `duplicateMarkets` would have been 0.
+
 **KNOWN GAP 2026-10-07 — there is no automatic missing-sample check on the
 verdict.** `CoverageReport.missingFraction` and its `>= 30%` warning are inert,
 and a reader is therefore never told when the dataset is too degraded to trust.
