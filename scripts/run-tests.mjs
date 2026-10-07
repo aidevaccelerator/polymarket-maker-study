@@ -17,7 +17,7 @@
  *   2. `rm -rf dist && npm test` reported "tests 0, pass 0, fail 0" and exited 0 —
  *      a vacuous green.
  *
- * So this runner asserts three things before it trusts the summary:
+ * So this runner asserts four things before it trusts the summary:
  *
  *   A. SOURCE COVERAGE — every `*.test.ts` under the mirrored `src/` roots has a
  *      corresponding emitted `*.test.js` in the given `dist/` roots. This catches
@@ -28,6 +28,13 @@
  *   C. COUNT RECONCILIATION — the aggregate `# tests N` equals the sum of the
  *      per-file `# tests N`. If the runner ever drops a file from the aggregate
  *      while still counting it here, this fails.
+ *   D. SOURCE ROOTS PRESENT — every mirrored `src/` root yields at least one
+ *      `*.test.ts`. collectFiles() tolerates ENOENT so a deleted `dist/` half
+ *      reads as a coverage gap (A) rather than a crash, but that same tolerance
+ *      meant a missing or empty `src/` root silently emptied the A loop: the run
+ *      went green with coverage checking effectively disabled. Checked per root,
+ *      not in aggregate, so one missing root fails even when another root
+ *      supplied sources.
  *
  * It then forwards the aggregate TAP output verbatim and exits with the runner's
  * own exit code, so a genuine test failure still fails the command.
@@ -113,14 +120,15 @@ function toSourceRoot(distRoot) {
 }
 
 let emittedFiles;
-let sourceFiles;
+let sourcesByRoot;
 try {
   emittedFiles = distRoots.flatMap((root) => collectFiles(root, TEST_EMITTED_SUFFIX));
-  sourceFiles = distRoots.flatMap((root) => collectFiles(toSourceRoot(root), TEST_SOURCE_SUFFIX));
+  sourcesByRoot = distRoots.map((root) => collectFiles(toSourceRoot(root), TEST_SOURCE_SUFFIX));
 } catch (error) {
   console.error(`::error::${error.message}`);
   process.exit(2);
 }
+const sourceFiles = sourcesByRoot.flat();
 
 const problems = [];
 
@@ -129,6 +137,17 @@ if (emittedFiles.length === 0) {
     `no emitted test files found under ${distRoots.join(', ')} — ` +
       'refusing to report a vacuous green. Run the build first.',
   );
+}
+
+// (D) Per root, not in aggregate: one missing src/ root must fail even when
+// another root supplied sources.
+for (const [index, distRoot] of distRoots.entries()) {
+  if (sourcesByRoot[index].length === 0) {
+    problems.push(
+      `no test sources under "${toSourceRoot(distRoot)}" (mirrored from "${distRoot}") — ` +
+        'source coverage could not be validated, so a green here would be meaningless.',
+    );
+  }
 }
 
 const emittedSet = new Set(emittedFiles.map((file) => path.resolve(file)));
