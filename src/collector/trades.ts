@@ -15,7 +15,7 @@
 //   - `queueAhead` is read from the PRIOR snapshot (the book state a shadow
 //     quote would have rested in), via `queueAhead(...)`.
 
-import type { BookSnapshot, QuoteTouch } from '../shared/schema.js';
+import type { BookSnapshot, QuoteTouch, SizeDrop } from '../shared/schema.js';
 import { queueAhead } from '../shared/queue.js';
 
 function bestPrice(levels: readonly [number, number][]): number | null {
@@ -69,4 +69,58 @@ export function detectTouches(prev: BookSnapshot, next: BookSnapshot): readonly 
   }
 
   return touches;
+}
+
+// A net size DECREASE at a best level, recorded but NOT classified as a fill.
+//
+// Complement to `detectTouches`, not a replacement: `detectTouches` fires on a
+// best-PRICE move and measured zero such events, while this fires on a best-level
+// size DECREASE at a stationary price and measured ~47 per 260s. Both are
+// necessary and neither subsumes the other.
+//
+// The classification is deliberately absent. `levelSize` returns 0 for a level
+// that is gone entirely, so a removal and a partial fill are the same
+// observation here, exactly as trades.ts's header says they are for `size`. A
+// caller wanting fills must decide in analysis, on data, not here.
+export function detectSizeDrops(prev: BookSnapshot, next: BookSnapshot): readonly SizeDrop[] {
+  const drops: SizeDrop[] = [];
+  const prevBid = bestPrice(prev.bids);
+  if (prevBid !== null) {
+    const prevSize = levelSize(prev.bids, prevBid);
+    const nextSize = levelSize(next.bids, prevBid);
+    if (nextSize < prevSize) {
+      drops.push({
+        ts: next.ts,
+        prevTs: prev.ts,
+        conditionId: next.conditionId,
+        tokenId: next.tokenId,
+        side: 'BUY',
+        price: prevBid,
+        prevSize,
+        nextSize,
+        bestBid: bestPrice(next.bids),
+        bestAsk: bestPrice(next.asks),
+      });
+    }
+  }
+  const prevAsk = bestPrice(prev.asks);
+  if (prevAsk !== null) {
+    const prevSize = levelSize(prev.asks, prevAsk);
+    const nextSize = levelSize(next.asks, prevAsk);
+    if (nextSize < prevSize) {
+      drops.push({
+        ts: next.ts,
+        prevTs: prev.ts,
+        conditionId: next.conditionId,
+        tokenId: next.tokenId,
+        side: 'SELL',
+        price: prevAsk,
+        prevSize,
+        nextSize,
+        bestBid: bestPrice(next.bids),
+        bestAsk: bestPrice(next.asks),
+      });
+    }
+  }
+  return drops;
 }

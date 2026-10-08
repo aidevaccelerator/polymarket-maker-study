@@ -75,6 +75,35 @@ export interface PriceChange {
   hash: string;              // exchange book-state hash after the change
 }
 
+// A net size DECREASE at a best level between two consecutive book snapshots.
+//
+// This is the only fill-carrying observation any in-scope public source
+// produces (see ASSUMPTIONS.md §13): the `price.polymarket` channel has no
+// size, and the CLOB `price_changes` channel measured 151 of 151 entries at
+// size 0 — all level removals, none at the touch.
+//
+// It is RECORDED, NOT CLASSIFIED. A decrease is either an aggressive fill or a
+// cancellation and the two are the same observation; nothing here decides which,
+// because deciding it in the collector would bake an unexamined assumption into
+// the dataset before any fill had been seen.
+//
+// ONLY DECREASES ARE WRITTEN. Increases are excluded deliberately: they are not
+// needed to answer the fill question, and at ~10,400 candidate rows/day they
+// would add ~360 part files per minute to a layout that already writes ~540,
+// which is the same file-count pressure documented in writer.ts.
+export interface SizeDrop {
+  ts: string;                // ts of the LATER snapshot; the drop happened across the interval
+  prevTs: string;            // ts of the earlier snapshot
+  conditionId: string;
+  tokenId: string;
+  side: 'BUY' | 'SELL';      // side of the BOOK whose best level shrank
+  price: number;             // that best level's price, unchanged across the interval by definition
+  prevSize: number;
+  nextSize: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+}
+
 // A trade print at or beyond where a hypothetical quote would rest
 export interface QuoteTouch {
   ts: string;

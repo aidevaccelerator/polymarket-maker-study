@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { BookSnapshot, QuoteTouch } from '../shared/schema.js';
+import type { BookSnapshot, QuoteTouch, SizeDrop } from '../shared/schema.js';
 import { BookPoller, booksByCondition } from './bookPoller.js';
 import type { BookPollerDeps, RawBookBatchFetcher } from './bookPoller.js';
 import type { TrackedMarket } from './gamma.js';
@@ -74,14 +74,16 @@ interface RecordedError {
 interface Recorded {
   readonly books: BookSnapshot[];
   readonly touches: QuoteTouch[];
+  readonly drops: SizeDrop[];
   readonly errors: RecordedError[];
 }
 
 function recorder(): { readonly deps: BookPollerDeps; readonly recorded: Recorded } {
-  const recorded: Recorded = { books: [], touches: [], errors: [] };
+  const recorded: Recorded = { books: [], touches: [], drops: [], errors: [] };
   const deps: BookPollerDeps = {
     onBook: (book) => void recorded.books.push(book),
     onTouch: (touch) => void recorded.touches.push(touch),
+    onDrop: (drop) => void recorded.drops.push(drop),
     onError: (market, err) => {
       recorded.errors.push({
         conditionId: market.conditionId,

@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-117 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
+126 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 117 across 11 files; analysis 62 across
-9 files; total 179 across 20 files.
+Current per-file counts: shared + collector 126 across 11 files; analysis 62 across
+9 files; total 188 across 20 files.
 
 **UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
 universe-discovery path — market parsing, category resolution from parent-event
@@ -694,3 +694,42 @@ and the markout both **optimistic**, contradicting the pessimistic stance
 `trades.ts:10-16` takes deliberately; counting none yields no sample at all. What the data
 supports is recording the drop as its own kind so the rule can be chosen in analysis and
 tested, rather than assumed in the collector.
+
+## 14. `kind=drop`: the size-drop signal, recorded and unclassified
+
+**Added 2026-10-08.** `detectSizeDrops` (`src/collector/trades.ts`) compares consecutive book
+snapshots and emits a `SizeDrop` whenever the size at a **best** level decreases. It is
+written to `kind=drop` and deliberately **not** classified as a fill.
+
+**Why this and not a change to `detectTouches`.** §13 established that no in-scope public
+feed reports a trade print, and that the best-price move `detectTouches` keys on occurs ~0
+times. The two detectors are complementary rather than competing: `detectTouches` fires on a
+best-PRICE move, `detectSizeDrops` on a best-level size DECREASE at a stationary price. A
+price move also removes the prior level, so it produces a drop with `nextSize = 0` — both
+records then describe one event, and deciding whether that is one fill or two is a
+caller's job, not the collector's.
+
+**Only decreases are written.** Increases would add ~10,400 candidate rows/day and, because
+the writer emits a part file per partition per flush, ~360 extra files/min on top of ~540 —
+for data the fill question does not need. Measured cost of the decrease-only rule: **82 drop
+files against 1,410 book files** over a 260s run, i.e. ~5.8%.
+
+**Measured 2026-10-08, 260s, 30 markets.** `drop: 98` recorded, alongside `book: 1410`,
+`tob: 7050`, `change: 119`, `touch: 0`. Sides roughly balanced (46 BUY / 52 SELL) across 26
+distinct conditions, extrapolating to **~32,600/day** — comfortably above
+`MIN_FILLS_FOR_VERDICT = 100`, which the price-move rule could never reach.
+
+**The one substantive clue, stated as observation and not conclusion.** All 98 drops were
+**partial** (level shrank but survived); **0** were a level removed outright. The samples
+chain, e.g. bid 0.33 going 2505.31 → 2385.31 → 2293.51. Size being consumed at a stationary
+price is a different signature from a cancellation, which ordinarily zeroes the level —
+recall the CLOB `price_changes` feed in §13, which reported 151 of 151 entries at `size == 0`
+and so *was* reporting removals. That the two populations differ is a reason to think these
+drops are consumption rather than cancellation. It is **not** proof: a partial cancel looks
+the same, and nothing in the data can separate them.
+
+**Still undecided.** Whether a `SizeDrop` is a fill, and if so with what queue treatment,
+remains a pre-registration question. `MIN_FILLS_FOR_VERDICT = 100` now looks reachable, but
+reaching it by counting every drop as a fill makes the fill rate and the markout both
+**optimistic**, against the deliberately pessimistic stance in `trades.ts:10-16`. The
+analysis half must choose the rule and state its bias direction before any verdict is read.

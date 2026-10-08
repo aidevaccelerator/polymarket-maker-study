@@ -150,6 +150,7 @@ async function main(): Promise<void> {
   const bookPoller = new BookPoller(markets, {
     onBook: (book) => writer.writeBook(book),
     onTouch: (touch) => writer.writeTouch(touch),
+    onDrop: (drop) => writer.writeDrop(drop),
     onError: (market, err) => {
       gapLog.logError(`book poll failed`, { context: { conditionId: market.conditionId, error: errToString(err) } });
     },

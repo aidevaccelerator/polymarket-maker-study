@@ -1,17 +1,18 @@
 import { BOOK_POLL_MS } from '../shared/config.js';
 import { asPrice, asSize, isRecord, numberOrNull } from '../shared/parse.js';
-import type { BookSnapshot, QuoteTouch } from '../shared/schema.js';
+import type { BookSnapshot, QuoteTouch, SizeDrop } from '../shared/schema.js';
 import { normalizeTs, nowIso } from '../shared/time.js';
 import { MalformedBookError } from './errors.js';
 import { postJson } from './http.js';
 import type { TrackedMarket } from './gamma.js';
-import { detectTouches } from './trades.js';
+import { detectSizeDrops, detectTouches } from './trades.js';
 
 const CLOB_BASE = 'https://clob.polymarket.com';
 
 export interface BookPollerDeps {
   readonly onBook: (book: BookSnapshot) => void;
   readonly onTouch: (touch: QuoteTouch) => void;
+  readonly onDrop: (drop: SizeDrop) => void;
   readonly onError: (market: TrackedMarket, err: unknown) => void;
 }
 
@@ -292,6 +293,7 @@ export class BookPoller {
     this.deps.onBook(snap);
     if (prev !== undefined) {
       for (const touch of detectTouches(prev, snap)) this.deps.onTouch(touch);
+      for (const drop of detectSizeDrops(prev, snap)) this.deps.onDrop(drop);
     }
   }
 }
