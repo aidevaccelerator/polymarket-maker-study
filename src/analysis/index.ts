@@ -332,7 +332,15 @@ async function main(): Promise<void> {
   // a warning too, so a genuinely absent manifest printed the identical sentence
   // twice — once as a coverage line and once as `- warning: ...`.
   if (pessimisticFills.length === 0) {
-    coverage.warnings.push('zero pessimistic fills in window — every distribution will be empty.');
+    coverage.warnings.push(
+      'zero pessimistic fills in window. This is EXPECTED and is not a sample-size problem: ' +
+        'a pessimistic fill requires proving an aggressor consumed shares resting BEHIND a ' +
+        '100-share order, and book snapshots cannot show that. A vanished level proves only ' +
+        'that the taker reached the queue; a surviving level proves the taker stopped short. ' +
+        'Neither yields a provable fill. The headline rule is therefore not identifiable from ' +
+        'this data. Treat the markout figures below as a POST-EVENT STUDY, not fill-weighted ' +
+        'maker economics. See docs/THRESHOLDS.md amendment log.',
+    );
   }
   if (marketFilterExcluded.price > 0) {
     coverage.warnings.push(

@@ -156,7 +156,21 @@ export function renderMarkdown(r: AnalysisResult): string {
 
   push('## Markout (adverseCents; positive = against us)');
   push('');
-  push('Headline is the **pessimistic** model. Optimistic is an upper bound, shown for context only.');
+  push(
+    'This is a **post-event study**: markout after a detected touch. It is NOT a ' +
+      'fill-weighted maker-economics result, and the weights below must not be read as a ' +
+      'fill probability.',
+  );
+  push('');
+  push(
+    'The **pessimistic** model is the pre-registered headline and is structurally empty: a ' +
+      'pessimistic fill requires proving an aggressor consumed shares resting behind a ' +
+      '100-share order, which book snapshots cannot establish. The **median** row is ' +
+      'weighted at `fillFraction = 1.0`, i.e. assuming a certain fill on every touch, because ' +
+      'a vanished level sets `min(1, size/queueAhead) = 1` exactly — measured against ' +
+      '`kind=drop` records the realistic median is **0.044**, so that row is overstated by ' +
+      'roughly 20x. Optimistic is a further upper bound, for context only.',
+  );
   push('');
   for (const horizon of [1, 5, 30, 60]) {
     push(`### +${horizon}s`);

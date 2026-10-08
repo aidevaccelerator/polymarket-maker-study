@@ -733,3 +733,37 @@ remains a pre-registration question. `MIN_FILLS_FOR_VERDICT = 100` now looks rea
 reaching it by counting every drop as a fill makes the fill rate and the markout both
 **optimistic**, against the deliberately pessimistic stance in `trades.ts:10-16`. The
 analysis half must choose the rule and state its bias direction before any verdict is read.
+
+## 15. The headline fill rule is not identifiable from book snapshots
+
+**2026-10-08.** `MIN_FILLS_FOR_VERDICT` gates the study's headline rule, and the fill count it
+requires is **0 or unknowable** for every event book data can present. See `docs/THRESHOLDS.md`
+for the amendment-log entry. Summary:
+
+- `detectTouches` can only fire when a level **vanishes** (ask up, bid down, side emptied), so
+  its `size` is a **lower bound** equal to the prior level's size — which is exactly
+  `queueAhead`. `trades.ts:12` already states `size` is a lower bound.
+- Therefore for every touch, `size === queueAhead`, leftover `= size − queueAhead = 0`, and
+  `pessimisticFill` correctly declines to claim a fill. **This is the model working.** A test
+  pins it: `pessimisticFill(100, 100, 100)` → no fill.
+- `kind=drop` records the other case. Measured: **52 of 52 were partial** (level survived),
+  **0** were full removals. A surviving level proves `takerSize < queueAhead`, so a resting
+  maker provably does not fill — a **proven zero**, not an absence of evidence.
+- `kind=touch` and `kind=drop` are **disjoint populations**: touches are always full removals,
+  drops are always partial reductions.
+
+**Consequence.** Pessimistic fills are 0 wherever provable and unknown elsewhere, so the floor
+cannot be met. `pessimisticFill` was NOT modified — an earlier attempt to change
+`takerSize > queueAhead` to `>=` was reverted after `queueModels.test.ts` failed on
+`pessimistic partial fill: leftover after the queue is consumed`, which asserts the intended
+leftover semantics. The limit is in the observation, not the model.
+
+**Median model is overstated by ~20x.** Case A sets `min(1, size/queueAhead) = 1.0` exactly, so
+the `+0.50c` median p50 at +30s assumes certain fill on every touch. The drop-derived median
+fill fraction is `p50 = 0.044` (`p10 0.002`, `p90 0.176`). The touch-weighted figure must not
+be read as a maker-economics result.
+
+**Retained.** Post-event markout after a touch or drop is computable and is reported as an
+**event study** — a different question, labelled as such. Whether a resting maker fills is not
+claimed. Answering that needs trade prints (on-chain or purchased), which is a scope decision
+not taken here.

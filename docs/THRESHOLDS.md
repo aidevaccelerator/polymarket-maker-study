@@ -386,3 +386,47 @@ entrypoints (`src/collector/index.ts`, `src/analysis/index.ts`) exist and build.
   touches, median-model p50 **+0.50c** at the 30s horizon, and **0 pessimistic fills** against
   a floor of 100. `INSUFFICIENT_DATA` is the correct verdict for that input and confirms the
   guard works. The remaining blocker is the pessimistic queue model, not the market filter.
+
+- **2026-10-08 — FINDING: the pre-registered headline rule is NOT IDENTIFIABLE from public
+  book data. No threshold was changed; a limit is disclosed.** This is the most consequential
+  entry in this log, and it is a negative result rather than an amendment to a value.
+
+  **The claim.** `pessimistic_median_markout_fail` requires at least `MIN_FILLS_FOR_VERDICT`
+  pessimistic fills. A fill requires knowing that an aggressive order consumed shares resting
+  **behind** a hypothetical order of `OUR_ORDER_SIZE = 100`. Measured over 52 `kind=drop`
+  records and every `kind=touch` record, **that number is not recoverable from book
+  snapshots.** The proof is exhaustive over the two cases a book diff can present:
+
+  | case | observed as | provable | NOT provable |
+  |---|---|---|---|
+  | A — touched level vanished | every `kind=touch` | `takerSize >= queueAhead`, so we were reached | whether the taker continued past us; fill ∈ [0, 100] |
+  | B — level survived | all 52 `kind=drop` | `takerSize = prevSize − nextSize < prevSize = queueAhead`, so we provably do **not** fill | — |
+
+  Case B yields a **proven zero**. Case A yields an **unprovable** value. So the pessimistic
+  fill count is 0 for every event that can be proven, and unknown for every event that cannot.
+  `pessimisticFill` in `src/analysis/queueModels.ts` is arithmetically **correct** and was
+  deliberately left unchanged; a test asserts exactly this (`queueAhead=100, takerSize=100` →
+  no fill), and an earlier proposal to "fix" it was reverted once that test showed the
+  behaviour was intended. The limit is in the data, not the model.
+
+  **The two populations are disjoint.** All 52 drops were Case B (level survived); no drop was
+  Case A. Every touch is Case A. Measured Case-B median fill fraction: `p10 0.002, p50 0.044,
+  p90 0.176`.
+
+  **Consequence for the currently reported median.** The `+0.50c` median p50 at +30s is
+  weighted at `fillFraction = 1.0`, i.e. assuming we fill with **certainty** on every touch,
+  because Case A sets `min(1, size/queueAhead) = 1.0` exactly. The drop-derived median is
+  **0.044**, so that headline is overstated by roughly **20x** and must not be read as a
+  maker-economics result.
+
+  **What is still measured.** Post-event markout after a touch or drop is computable and is
+  retained as an **event study** — explicitly a different question from fill-weighted maker
+  economics, and labelled as such. What is not claimed is any statement about whether a
+  resting maker fills.
+
+  **If the original question is to be answered**, it requires actual trade prints: on-chain
+  reconstruction or a purchased feed. That is a scope decision, deliberately not taken here.
+
+  **Provenance.** Disclosed after data collection and after the model was read, with no
+  independent sample. The case split is a proof over recorded events, not a statistical
+  estimate, so it does not depend on sample size — but the p50/p90 figures above do.
