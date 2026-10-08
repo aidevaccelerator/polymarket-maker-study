@@ -324,3 +324,32 @@ entrypoints (`src/collector/index.ts`, `src/analysis/index.ts`) exist and build.
   move, so the fill model — not the cadence — is what currently yields no fill sample, and
   `MIN_FILLS_FOR_VERDICT = 100` is not currently reachable. What counts as a fill is a
   pre-registration question and is deliberately **not** answered by this entry.
+
+- **2026-10-07 — A fourth record kind (`kind=change`) added, and the negative result
+  that motivates it recorded.** The collector now also subscribes to the CLOB market
+  websocket channel (`wss://ws-subscriptions-clob.polymarket.com/ws/market`) and writes its
+  `price_changes` entries verbatim to `kind=change` (`PriceChange`,
+  `src/shared/schema.ts`). This is a fourth dataset tier; it adds no threshold and changes
+  no constant, verdict rule, or statistic.
+
+  **The finding, which is the point of the entry:** the channel carries `price`, `size`,
+  `side`, `best_bid` and `best_ask` — the fields a fill would need — and delivers ~16
+  events/min/token. But over a 200s live capture it produced **151 entries across 19
+  conditions, of which 151 had `size == 0` and 0 had `size > 0`**: every event a level
+  *removal*, none at the touch, none implying a best-price move. It reports cancellations,
+  not fills. The `price.polymarket` channel the collector already used carries neither
+  `size` nor `side` at all.
+
+  Consequently `QuoteTouch` remains empty in practice — **0** best-level price moves across
+  1,320 consecutive book pairs — `npm run analyze` fails on real data with `no QuoteTouch
+  records in window`, and **the analysis half has never run end to end on real data**.
+  `MIN_FILLS_FOR_VERDICT = 100` is unreachable under the current fill rule. This is
+  disclosed here because it bears directly on whether the pre-registered decision rule can
+  be evaluated at all, which a reader is entitled to know before spending further compute.
+
+  **Still not decided, deliberately.** Whether a net size drop at the touched level counts
+  as a fill is a pre-registration question. Both live answers are bad in opposite
+  directions: counting every drop as a fill makes fill rate and markout **optimistic**,
+  against the deliberately pessimistic stance in `src/collector/trades.ts`; counting none
+  produces no sample. Recording the raw change feed was preferred to guessing, so that the
+  choice is made in analysis against measured data. See `src/analysis/ASSUMPTIONS.md` §13.

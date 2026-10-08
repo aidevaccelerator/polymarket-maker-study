@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-110 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
+117 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 110 across 10 files; analysis 62 across
-9 files; total 172 across 19 files.
+Current per-file counts: shared + collector 117 across 11 files; analysis 62 across
+9 files; total 179 across 20 files.
 
 **UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
 universe-discovery path — market parsing, category resolution from parent-event
@@ -647,3 +647,50 @@ sweep, one sweep counted per completed pass, a multi-market pass counted once,
 finite non-negative durations with `maxMs >= meanMs`, and a guard-dropped
 reentrant call not counted as a sweep. They assert counts and shapes, never a
 wall-clock duration, which would be flaky.
+
+## 13. Neither public feed exposes fills; only a book-diff size drop carries fill evidence
+
+**Measured 2026-10-08, after collection had started.** Three public read-only sources were
+probed over the tracked 30-market universe. None of them reports a trade print:
+
+| Source | Carries | Fill information |
+|---|---|---|
+| `GET /clob.polymarket.com/book` | full depth | only a net size DROP at a level between consecutive snapshots |
+| `price.polymarket` on `ws-live-v2` | `best_bid`, `best_ask` | **none** — no `size`, no `side` |
+| `price_changes` on `ws-subscriptions-clob` | `price`, `size`, `side`, `best_bid`, `best_ask` | **none in practice** — see below |
+
+**`QuoteTouch` therefore stays empty.** `detectTouches` (`src/collector/trades.ts:33`)
+fires only when the best ask moves up or the best bid moves down. Measured: **0** such
+moves across 1,320 consecutive book pairs, and **0** across 151 `price_changes` events.
+`npm run analyze` on real collected data fails with `no QuoteTouch records in window`, so
+**the analysis half has never executed end to end on real data** — only against fixtures.
+`MIN_FILLS_FOR_VERDICT = 100` is unreachable under the current fill rule.
+
+**The `price_changes` negative result.** A 200s live capture recorded 151 entries across
+19 conditions. **151 of 151 had `size == 0`** — a level *removal* — and **0** had
+`size > 0`. None occurred at the touch (`price == bestBid` or `bestAsk`: 0), and none
+implied a best-price move. So this channel reports cancellations, not fills, despite
+carrying the fields a fill would need. It is recorded to `kind=change` verbatim
+(`PriceChange`, `src/shared/schema.ts`) precisely because that negative result needed
+evidence rather than inference — but it is not a fill source.
+
+**What the only remaining signal is.** A net size DROP at the touched level between two
+consecutive book snapshots: **47 such events per 260s** across 30 markets, extrapolating to
+~15,600/day. These are currently **discarded** — `detectTouches` ignores them. They are the
+only fill evidence any in-scope public source produces.
+
+**The ambiguity is irreducible, not an implementation gap.** `src/collector/trades.ts:12-14`
+already states it: an add at the touched level between polls is indistinguishable from a
+fill, and a cancellation of the best level is indistinguishable from a fill. No sampling
+cadence removes this, because the two produce identical observations. The recorded
+per-market volume — $475,251 across the 30 tracked markets over 24h, with only 4 of 30
+showing zero — confirms these markets do trade; the trade simply does not turn the touch
+over within any interval this collector can sample.
+
+**Deliberately undecided.** Whether a size drop is counted as a fill, a cancel, or
+something in between is a pre-registration question and is **not** settled here. The two
+live options pull in opposite directions: counting every drop as a fill makes the fill rate
+and the markout both **optimistic**, contradicting the pessimistic stance
+`trades.ts:10-16` takes deliberately; counting none yields no sample at all. What the data
+supports is recording the drop as its own kind so the rule can be chosen in analysis and
+tested, rather than assumed in the collector.

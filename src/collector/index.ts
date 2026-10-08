@@ -19,6 +19,7 @@ import { discoverUniverse } from './gamma.js';
 import type { TrackedMarket } from './gamma.js';
 import { ParquetWriter } from './writer.js';
 import { PriceWs, toTopOfBook } from './ws.js';
+import { ClobPriceWs } from './clobWs.js';
 import type { TopOfBookUpdate } from './ws.js';
 
 const FLUSH_INTERVAL_MS = 5000;
@@ -135,6 +136,17 @@ async function main(): Promise<void> {
     },
   );
 
+  const clobWs = new ClobPriceWs(
+    markets.map((m) => ({ conditionId: m.conditionId, tokenId: m.tokenId })),
+    {
+      onChange: (c) => writer.writeChange(c),
+      onUnparsed: () => {
+        gapLog.logError('clob ws: unparsed price_change entry');
+      },
+    },
+  );
+  clobWs.start();
+
   const bookPoller = new BookPoller(markets, {
     onBook: (book) => writer.writeBook(book),
     onTouch: (touch) => writer.writeTouch(touch),
@@ -177,6 +189,7 @@ async function main(): Promise<void> {
     if (durationTimer !== null) clearTimeout(durationTimer);
     bookPoller.stop();
     ws.close();
+    clobWs.close();
     try {
       writer.flush();
     } catch (err) {

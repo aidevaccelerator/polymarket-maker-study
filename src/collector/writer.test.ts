@@ -148,7 +148,7 @@ test('a fully successful flush leaves nothing to re-write', async () => {
     assert.deepEqual(allParquetFiles(dataDir), before);
 
     // counts() is process-lifetime and deliberately not reset by flush().
-    assert.deepEqual(writer.counts(), { book: 2, tob: 0, touch: 0 });
+    assert.deepEqual(writer.counts(), { book: 2, tob: 0, touch: 0, change: 0 });
     assert.ok(statSync(dataDir).isDirectory());
   } finally {
     rmSync(dataDir, { recursive: true, force: true });

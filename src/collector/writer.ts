@@ -41,19 +41,21 @@
 //   book  : ts recvTs conditionId tokenId bids(JSON) asks(JSON) tickSize minOrderSize
 //   tob   : ts conditionId tokenId bestBid bestAsk mid spread   (DOUBLE, nullable)
 //   touch : ts conditionId tokenId side price size bookTs queueAhead
+//   change: ts conditionId tokenId side price size bestBid bestAsk hash
 
 import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { parquetWriteFile } from 'hyparquet-writer';
-import type { BookSnapshot, QuoteTouch, TopOfBook } from '../shared/schema.js';
+import type { BookSnapshot, PriceChange, QuoteTouch, TopOfBook } from '../shared/schema.js';
 import { utcDateOf } from '../shared/time.js';
 
-export type Kind = 'book' | 'tob' | 'touch';
+export type Kind = 'book' | 'tob' | 'touch' | 'change';
 
 export interface RecordCounts {
   readonly book: number;
   readonly tob: number;
   readonly touch: number;
+  readonly change: number;
 }
 
 const KEY_SEP = '\u0000';
@@ -78,9 +80,11 @@ export class ParquetWriter {
   private readonly bookBuf = new Map<string, BookSnapshot[]>();
   private readonly tobBuf = new Map<string, TopOfBook[]>();
   private readonly touchBuf = new Map<string, QuoteTouch[]>();
+  private readonly changeBuf = new Map<string, PriceChange[]>();
   private bookCount = 0;
   private tobCount = 0;
   private touchCount = 0;
+  private changeCount = 0;
 
   constructor(private readonly dataDir: string) {}
 
@@ -108,14 +112,28 @@ export class ParquetWriter {
     this.touchCount += 1;
   }
 
+  writeChange(rec: PriceChange): void {
+    const key = `${utcDateOf(rec.ts)}${KEY_SEP}${rec.conditionId}`;
+    const arr = this.changeBuf.get(key);
+    if (arr === undefined) this.changeBuf.set(key, [rec]);
+    else arr.push(rec);
+    this.changeCount += 1;
+  }
+
   counts(): RecordCounts {
-    return { book: this.bookCount, tob: this.tobCount, touch: this.touchCount };
+    return {
+      book: this.bookCount,
+      tob: this.tobCount,
+      touch: this.touchCount,
+      change: this.changeCount,
+    };
   }
 
   flush(): void {
     this.flushBook();
     this.flushTob();
     this.flushTouch();
+    this.flushChange();
   }
 
   private flushBook(): void {
@@ -184,6 +202,30 @@ export class ParquetWriter {
       this.touchBuf.delete(key);
     }
     this.touchBuf.clear();
+  }
+
+  private flushChange(): void {
+    for (const [key, rows] of this.changeBuf) {
+      if (rows.length === 0) continue;
+      const { tmpPath, finalPath } = this.preparePartition(key, 'change');
+      parquetWriteFile({
+        filename: tmpPath,
+        columnData: [
+          { name: 'ts', data: rows.map((r) => r.ts), type: 'STRING' },
+          { name: 'conditionId', data: rows.map((r) => r.conditionId), type: 'STRING' },
+          { name: 'tokenId', data: rows.map((r) => r.tokenId), type: 'STRING' },
+          { name: 'side', data: rows.map((r) => r.side), type: 'STRING' },
+          { name: 'price', data: rows.map((r) => r.price), type: 'DOUBLE' },
+          { name: 'size', data: rows.map((r) => r.size), type: 'DOUBLE' },
+          { name: 'bestBid', data: rows.map((r) => r.bestBid), type: 'DOUBLE' },
+          { name: 'bestAsk', data: rows.map((r) => r.bestAsk), type: 'DOUBLE' },
+          { name: 'hash', data: rows.map((r) => r.hash), type: 'STRING' },
+        ],
+      });
+      renameSync(tmpPath, finalPath);
+      this.changeBuf.delete(key);
+    }
+    this.changeBuf.clear();
   }
 
   private preparePartition(
