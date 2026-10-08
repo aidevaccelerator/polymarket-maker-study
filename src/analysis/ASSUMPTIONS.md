@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-102 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 164
+110 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 102 across 10 files; analysis 62 across
-9 files; total 164 across 19 files.
+Current per-file counts: shared + collector 110 across 10 files; analysis 62 across
+9 files; total 172 across 19 files.
 
 **UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
 universe-discovery path — market parsing, category resolution from parent-event
@@ -436,7 +436,9 @@ run, both read off the code:
 - `BookPoller` keys its prior-book map by `conditionId`, so N occurrences of
   one condition meant N sequential `/book` requests per sweep for an identical
   book — N times the request load against a public endpoint for no new
-  information — and inflated the `bookSweep` mean in the manifest.
+  information — and inflated the `bookSweep` mean in the manifest. Later batching
+  (see §12) reduced a sweep to one request regardless, so the request-load half of
+  this is now moot; the duplicate-work half is still why the de-duplication matters.
 - `writeManifest`'s `marketsTracked` mapped the array, so the manifest's market
   list repeated the entry and `marketCount` was overstated.
 
@@ -544,54 +546,50 @@ emits the missing-sample warning nor claims the manifest is absent when
 
 ## 12. The full-book cadence is a sweep duration, not `BOOK_POLL_MS`
 
+> **UPDATE 2026-10-07 — the sweep is now BATCHED, so this section's central formula
+> changed.** It previously read
+> `max(BOOK_POLL_MS, markets × per-request latency)`, because `pollAll` fetched
+> markets one at a time. `pollAll` now issues ONE `POST /books` per sweep, so a
+> sweep costs one request regardless of market count and the formula becomes
+> `max(BOOK_POLL_MS, one-batch latency)`. Measured over 260s / 30 markets:
+> **45 sweeps, mean 446 ms, max 1268 ms**, versus 10-50 s before. The 167 ms
+> crossover is gone with it. The original reasoning is kept below because the
+> claim it corrected — "full order book @ 5s" was not what the collector
+> delivered — is why this section exists at all; batching is what finally made
+> the 5s figure true.
+
 **The claim being corrected.** The README data layout, the `BookSnapshot` comment
 in `src/shared/schema.ts` and the constant table in `docs/THRESHOLDS.md` all
 described tier 1 as "full order book @ 5s" / "a full depth snapshot every 5
-seconds". That is not what the collector delivers. This section states what it
+seconds". That is not what the collector delivered. This section states what it
 delivers.
 
 **The mechanism, read from the code.** `BookPoller.start(intervalMs =
 BOOK_POLL_MS)` installs `setInterval(() => { void this.pollAll(); }, intervalMs)`
-and fires one immediate sweep. `pollAll` is:
+and fires one immediate sweep. `pollAll` requests every tracked market through
+the multi-book endpoint in a single POST, then processes each response on its
+own. The `polling` guard is unchanged: an interval tick arriving mid-sweep
+returns immediately — dropped, not queued, never concurrent. `postJson` adds no
+retry and no parallelism (one `await fetch`, a 10s `AbortSignal.timeout`).
 
-```ts
-if (this.polling) return;
-this.polling = true;
-try {
-  for (const market of this.markets) {
-    await this.pollOne(market);
-  }
-} finally {
-  this.polling = false;
-}
-```
+A market omitted from the batch response — the endpoint drops tokens that have
+never traded — is reported through `onError` for that market alone, so one
+omitted token costs one market's snapshot and not the sweep. A failed request
+reports every market, which is the same per-market surfacing the sequential
+sweep produced.
 
-`await` inside the `for` makes the sweep **strictly sequential** — one in-flight
-HTTP request per market, never parallel. And the `polling` guard means an
-interval tick that arrives while a sweep is still running **returns
-immediately**: it is dropped, not queued, and not run concurrently.
-`fetchJson` adds no retry and no parallelism (one `await fetch`, a 10s
-`AbortSignal.timeout`).
+> **effective cadence = `max(BOOK_POLL_MS, one-batch latency)`**
 
-So one sweep performs `markets.length` serial requests, and its wall-clock
-duration is approximately `markets.length × per-request latency`. Whenever that
-exceeds `intervalMs`, the next tick is dropped, so:
+One sweep is one request, so market count no longer multiplies the sweep cost.
+What remains is a single round trip.
 
-> **effective cadence = `max(BOOK_POLL_MS, markets × per-request latency)`**
-
-**The crossover, stated concretely.** The documented interval stops being
-achieved once per-request latency exceeds **`BOOK_POLL_MS / markets`**. Generally:
-at a fixed market count, any latency above that quotient puts the collector into
-the sweep-bound regime; at a fixed latency, any market count above
-`BOOK_POLL_MS / latency` does the same. At the pre-registered defaults
-(`BOOK_POLL_MS = 5000`, 30 markets) the quotient is `5000 / 30 ≈ 167 ms`.
-
-One read-only probe measured a single real `/book` round trip at **266 ms**. If
-that were typical, 30 markets would cost ~7.98 s per sweep, roughly 1.6× the
-documented interval — the sweep-bound regime by default. Treat that figure as
-**one observation, not a measured average**: it was a single request taken before
-collection started, and the number that matters is recorded per-run in
-`manifest.json` (§below) rather than assumed here.
+**Measured, not assumed.** A 260-second live run over 30 tracked markets
+recorded `bookSweep = { sweeps: 45, meanMs: 446, maxMs: 1268 }` in
+`data/quality/manifest.json`, with 30 of 30 markets present in every sweep and
+zero errors. Before batching, the same workload cost 0.54-1.76 s per `/book`
+request, so 30 markets meant 15-50 s per sweep. The interval is now the binding
+constraint rather than the sweep, which is the first time the documented 5s
+cadence has actually been achieved.
 
 **Why this matters beyond documentation.** The interval is load-bearing on the
 headline statistic. `detectTouches` (`src/collector/trades.ts`) derives an
@@ -631,12 +629,18 @@ universe — report `null`, never `0`, because a `0` ms sweep would read as a
 healthy instantaneous sweep rather than as "never ran".
 
 **Deliberately not done.** `BOOK_POLL_MS` is unchanged: altering it would change
-collection behaviour and the storage-cost rationale that depends on it. The sweep
-was not parallelised — that would raise request concurrency against a public API
-and is out of scope. The reentrancy guard was not touched. And no per-sweep gap
-entry was added: at roughly one sweep per 8s over 30 days that is ~324,000 log
-lines, which would swamp the durable gap log and the uploaded gap files under one
-repeating entry — the same failure mode §11's rate limiting exists to prevent.
+collection behaviour and the storage-cost rationale that depends on it. The
+reentrancy guard was not touched. And no per-sweep gap entry was added: at
+roughly one sweep per 8s over 30 days that is ~324,000 log lines, which would
+swamp the durable gap log and the uploaded gap files under one repeating entry —
+the same failure mode §11's rate limiting exists to prevent.
+
+**Superseded: "the sweep was not parallelised."** The original text here
+declined to parallelise the sweep because that would raise request concurrency
+against a public API. Batching is not an argument against that — it takes a
+sweep from 30 requests to 1, so concurrency against the public API goes **down**.
+The reason for avoiding a concurrent fan-out no longer applies, and the sweep is
+now a single request rather than 30 sequential ones.
 
 Tests in `src/collector/bookPoller.test.ts` pin the reporting: `null` before any
 sweep, one sweep counted per completed pass, a multi-market pass counted once,

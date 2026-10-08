@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { BookSnapshot, QuoteTouch } from '../shared/schema.js';
-import { BookPoller } from './bookPoller.js';
-import type { BookPollerDeps, RawBookFetcher } from './bookPoller.js';
+import { BookPoller, booksByCondition } from './bookPoller.js';
+import type { BookPollerDeps, RawBookBatchFetcher } from './bookPoller.js';
 import type { TrackedMarket } from './gamma.js';
 
 const MARKET: TrackedMarket = {
@@ -14,6 +14,7 @@ const MARKET: TrackedMarket = {
 };
 
 const SECOND_MARKET: TrackedMarket = { ...MARKET, conditionId: '0xc2', tokenId: 'tk2' };
+const THIRD_MARKET: TrackedMarket = { ...MARKET, conditionId: '0xc3', tokenId: 'tk3' };
 
 // Shaped like the live CLOB response, transcribed from a read-only probe of
 // https://clob.polymarket.com/book on 2026-10-07. Two details matter and both
@@ -102,7 +103,14 @@ function harness(markets: readonly TrackedMarket[] = [MARKET]): {
 } {
   const { deps, recorded } = recorder();
   const bodies: unknown[] = [];
-  const fetch: RawBookFetcher = async () => (bodies.length > 1 ? bodies.shift() : bodies[0]);
+  const fetch: RawBookBatchFetcher = async (requested) => {
+    const out = new Map<string, unknown>();
+    for (const market of requested) {
+      const body = bodies.length > 1 ? bodies.shift() : bodies[0];
+      if (body !== undefined) out.set(market.conditionId, body);
+    }
+    return out;
+  };
   return { poller: new BookPoller(markets, deps, fetch), recorded, bodies };
 }
 
@@ -238,7 +246,7 @@ describe('BookPoller /book parsing', () => {
     // A thrown fetch is unchanged pre-existing behaviour.
     const { deps, recorded } = recorder();
     let calls = 0;
-    const fetch: RawBookFetcher = async () => {
+    const fetch: RawBookBatchFetcher = async () => {
       calls += 1;
       throw new Error(`network error ${calls}`);
     };
@@ -294,8 +302,13 @@ describe('BookPoller malformed-response rate limit', () => {
 
   it('does not let one failing condition suppress another', async () => {
     const { deps, recorded } = recorder();
-    const fetch: RawBookFetcher = async (market) =>
-      market.conditionId === MARKET.conditionId ? BIDS_NOT_ARRAY : ASKS_NOT_ARRAY;
+    const fetch: RawBookBatchFetcher = async (requested) =>
+      new Map(
+        requested.map((m) => [
+          m.conditionId,
+          m.conditionId === MARKET.conditionId ? BIDS_NOT_ARRAY : ASKS_NOT_ARRAY,
+        ]),
+      );
     const poller = new BookPoller([MARKET, SECOND_MARKET], deps, fetch);
 
     await poller.pollAll();
@@ -372,12 +385,13 @@ describe('BookPoller observed sweep cost', () => {
   });
 
   it('counts a multi-market pass as one sweep that fetched every market', async () => {
-    // The measurement only means something because a sweep is
-    // markets.length serial requests: one sweep over two markets must be counted
-    // once while fetching both. Only COUNT and the fetch count are asserted —
-    // durations are timing-dependent and are never compared to a fixed figure.
+    // The measurement only means something because one sweep covers every market
+    // in a single request: a sweep over two markets must be counted once while
+    // fetching both. Only COUNT is asserted — durations are timing-dependent and
+    // are never compared to a fixed figure.
     const { deps, recorded } = recorder();
-    const fetch: RawBookFetcher = async () => GOOD_BODY;
+    const fetch: RawBookBatchFetcher = async (requested) =>
+      new Map(requested.map((m) => [m.conditionId, GOOD_BODY]));
     const poller = new BookPoller([MARKET, SECOND_MARKET], deps, fetch);
 
     await poller.pollAll();
@@ -395,9 +409,9 @@ describe('BookPoller observed sweep cost', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const fetch: RawBookFetcher = async () => {
+    const fetch: RawBookBatchFetcher = async () => {
       await gate;
-      return GOOD_BODY;
+      return new Map([[MARKET.conditionId, GOOD_BODY]]);
     };
     const poller = new BookPoller([MARKET], deps, fetch);
 
@@ -409,5 +423,97 @@ describe('BookPoller observed sweep cost', () => {
     await inFlight;
 
     assert.equal(poller.sweepStats()?.sweeps, 1, 'only the real sweep is counted');
+  });
+});
+
+describe('BookPoller multi-book batching', () => {
+  it('fetches every market in ONE request per sweep', async () => {
+    const { deps, recorded } = recorder();
+    let calls = 0;
+    const fetch: RawBookBatchFetcher = async (requested) => {
+      calls += 1;
+      return new Map(requested.map((m) => [m.conditionId, GOOD_BODY]));
+    };
+    const poller = new BookPoller([MARKET, SECOND_MARKET, THIRD_MARKET], deps, fetch);
+
+    await poller.pollAll();
+
+    assert.equal(calls, 1, 'a sweep is one batched request, not one per market');
+    assert.equal(recorded.books.length, 3, 'all three markets are still written');
+  });
+
+  it('reports only the omitted market, and still writes the ones present', async () => {
+    // The endpoint omits tokens that have never traded. That must cost ONE
+    // market's snapshot, not the whole sweep — the property the old sequential
+    // sweep had for free and a naive batch port would silently lose.
+    const { deps, recorded } = recorder();
+    const fetch: RawBookBatchFetcher = async () =>
+      new Map([
+        [MARKET.conditionId, GOOD_BODY],
+        [THIRD_MARKET.conditionId, GOOD_BODY],
+      ]);
+    const poller = new BookPoller([MARKET, SECOND_MARKET, THIRD_MARKET], deps, fetch);
+
+    await poller.pollAll();
+
+    assert.equal(recorded.books.length, 2, 'a present market is unaffected by a missing sibling');
+    assert.equal(recorded.errors.length, 1);
+    assert.equal(recorded.errors[0]?.conditionId, SECOND_MARKET.conditionId);
+    assert.match(recorded.errors[0]?.message ?? '', /omitted from the multi-book response/);
+  });
+
+  it('reports EVERY market when the batch request itself fails', async () => {
+    const { deps, recorded } = recorder();
+    const fetch: RawBookBatchFetcher = async () => {
+      throw new Error('batch request failed');
+    };
+    const poller = new BookPoller([MARKET, SECOND_MARKET], deps, fetch);
+
+    await poller.pollAll();
+
+    assert.deepEqual(recorded.books, []);
+    assert.deepEqual(
+      recorded.errors.map((e) => e.conditionId).sort(),
+      ['0xc1', '0xc2'],
+      'a failed request loses every market, and says so for each',
+    );
+  });
+});
+
+describe('booksByCondition response matching', () => {
+  const MARKETS = [MARKET, SECOND_MARKET];
+
+  it('matches by asset_id even when the response order is reversed', () => {
+    const body = [
+      { ...GOOD_BODY, asset_id: 'tk2', market: '0xc2' },
+      { ...GOOD_BODY, asset_id: 'tk1', market: '0xc1' },
+    ];
+    const out = booksByCondition(body, MARKETS);
+    assert.equal((out.get('0xc1') as { market: string }).market, '0xc1');
+    assert.equal((out.get('0xc2') as { market: string }).market, '0xc2');
+  });
+
+  it('omits a market the response leaves out, rather than shifting the rest', () => {
+    const out = booksByCondition([{ ...GOOD_BODY, asset_id: 'tk2' }], MARKETS);
+    assert.equal(out.has('0xc2'), true);
+    assert.equal(out.has('0xc1'), false);
+  });
+
+  it('drops an entry whose asset_id no tracked market claims', () => {
+    const out = booksByCondition([{ ...GOOD_BODY, asset_id: 'tk-unknown' }], MARKETS);
+    assert.equal(out.size, 0, 'an unclaimed token must not be attributed to any market');
+  });
+
+  it('skips entries that are not objects and entries with no string asset_id', () => {
+    const out = booksByCondition(
+      [null, 42, { ...GOOD_BODY, asset_id: 7 }, { ...GOOD_BODY, asset_id: 'tk1' }],
+      MARKETS,
+    );
+    assert.equal(out.size, 1);
+    assert.equal(out.has('0xc1'), true);
+  });
+
+  it('returns an empty map when the response is not an array', () => {
+    assert.equal(booksByCondition({ books: [] }, MARKETS).size, 0);
   });
 });

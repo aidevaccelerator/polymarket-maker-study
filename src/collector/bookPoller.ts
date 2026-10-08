@@ -3,7 +3,7 @@ import { asPrice, asSize, isRecord, numberOrNull } from '../shared/parse.js';
 import type { BookSnapshot, QuoteTouch } from '../shared/schema.js';
 import { normalizeTs, nowIso } from '../shared/time.js';
 import { MalformedBookError } from './errors.js';
-import { fetchJson } from './http.js';
+import { postJson } from './http.js';
 import type { TrackedMarket } from './gamma.js';
 import { detectTouches } from './trades.js';
 
@@ -29,10 +29,20 @@ export interface BookSweepStats {
   readonly maxMs: number;
 }
 
-// The raw, unparsed /book body. Injecting the BODY rather than a pre-parsed
-// BookSnapshot keeps `parseBook` inside the test: a stub returning an already
-// parsed book would bypass the very parsing whose failure this file reports.
-export type RawBookFetcher = (market: TrackedMarket) => Promise<unknown>;
+// Raw, unparsed `/book` bodies for ONE sweep, keyed by `conditionId`. Injecting
+// the BODIES rather than a pre-parsed `BookSnapshot` keeps `parseBook` inside the
+// test: a stub returning an already parsed book would bypass the very parsing
+// whose failure this file reports.
+//
+// A MISSING key is meaningful and is not an error condition of this type: the
+// multi-book endpoint omits tokens that have never traded, so absence is how a
+// market that produced no book is represented. `pollAll` turns each absent
+// market into an `onError` for that market alone.
+export type RawBooksByCondition = ReadonlyMap<string, unknown>;
+
+export type RawBookBatchFetcher = (
+  markets: readonly TrackedMarket[],
+) => Promise<RawBooksByCondition>;
 
 function parseLevels(v: unknown): [number, number][] | null {
   if (!Array.isArray(v)) return null;
@@ -83,31 +93,77 @@ function parseBook(body: unknown, market: TrackedMarket): ParsedBook {
   };
 }
 
-async function fetchBookOverHttp(market: TrackedMarket): Promise<unknown> {
-  return fetchJson(`${CLOB_BASE}/book?token_id=${market.tokenId}`);
+/**
+ * Fetch every tracked market's book in ONE request.
+ *
+ * Responses are matched by `asset_id`, never by array position: the endpoint
+ * returns them in whatever order it fetched them, and the observed timestamps
+ * come back out of request order. A positional match would silently attribute a
+ * book to the wrong market, which would corrupt `prev` and fabricate touches.
+ */
+/**
+ * Translate a multi-book response into a `conditionId`-keyed map.
+ *
+ * Matching is by `asset_id`, never by array position: the endpoint returns
+ * entries in whatever order it fetched them, and observed timestamps come back
+ * out of request order. A positional match would attribute a book to the wrong
+ * market, which would poison `prev` for that condition and fabricate touches.
+ *
+ * An `asset_id` no tracked market claims is dropped rather than guessed at.
+ */
+export function booksByCondition(
+  body: unknown,
+  markets: readonly TrackedMarket[],
+): RawBooksByCondition {
+  if (!Array.isArray(body)) return new Map();
+  const conditionIdByToken = new Map<string, string>();
+  for (const m of markets) conditionIdByToken.set(m.tokenId, m.conditionId);
+  const out = new Map<string, unknown>();
+  for (const entry of body) {
+    if (!isRecord(entry)) continue;
+    const assetId = entry['asset_id'];
+    if (typeof assetId !== 'string') continue;
+    const conditionId = conditionIdByToken.get(assetId);
+    if (conditionId === undefined) continue;
+    out.set(conditionId, entry);
+  }
+  return out;
+}
+
+async function fetchBooksOverHttp(markets: readonly TrackedMarket[]): Promise<RawBooksByCondition> {
+  return booksByCondition(
+    await postJson(
+      `${CLOB_BASE}/books`,
+      markets.map((m) => ({ token_id: m.tokenId })),
+    ),
+    markets,
+  );
 }
 
 /**
  * Full-book poller.
  *
- * CADENCE IS A SWEEP DURATION, NOT THE INTERVAL. `BOOK_POLL_MS` is the delay
- * between ATTEMPTS, not the cadence actually achieved. `pollAll` walks
- * `markets` with `await` in a `for` loop, so one sweep is `markets.length`
- * SERIAL HTTP requests and its wall-clock duration is
- * `markets.length x per-request latency`. The `polling` guard then DROPS any
- * interval tick that lands while a sweep is still running — it returns
- * immediately, it does not queue and it does not run concurrently. The effective
- * cadence is therefore `max(BOOK_POLL_MS, markets x latency)`.
+ * ONE REQUEST PER SWEEP. `pollAll` fetches every tracked market through the
+ * multi-book endpoint in a single POST, then processes each response on its own.
  *
- * The crossover is concrete: the documented interval stops being achieved once
- * per-request latency exceeds `BOOK_POLL_MS / markets`. At the default
- * `BOOK_POLL_MS = 5000` over the default 30 markets that is `5000 / 30`, i.e.
- * once latency passes ~167 ms. `sweepStats()` exists so the number on the right
- * is measured into the manifest rather than assumed.
+ * This replaced a sequential per-market sweep that cost `markets.length x
+ * per-request latency` — measured at 0.54-1.76 s per `/book`, so 15-50 s for 30
+ * markets against a nominal `BOOK_POLL_MS = 5000`. Batching the same 30 tokens
+ * measured 0.68 s. That gap was not cosmetic: `detectTouches` infers a fill only
+ * from a best-level price MOVE between consecutive snapshots, so at a 15-50 s
+ * effective cadence a lift-and-refill between polls is invisible and the touch
+ * stream stays empty.
  *
- * The sweep is deliberately sequential. Parallelising it would raise request
- * concurrency against a public API, which is out of scope for this study; the
- * reentrancy guard is likewise load-bearing, not incidental.
+ * The earlier comment here justified the sequential sweep as avoiding raised
+ * request concurrency. Batching is the opposite of that argument: it takes a
+ * sweep from 30 requests to 1, so concurrency against the public API goes DOWN.
+ *
+ * `BOOK_POLL_MS` remains the delay between ATTEMPTS and the `polling` guard still
+ * DROPS a tick landing mid-sweep rather than queueing it, so the achieved cadence
+ * is `max(BOOK_POLL_MS, sweep duration)` — but the sweep term is now ~0.7 s rather
+ * than ~50 s, so the interval is finally the binding constraint and the documented
+ * cadence is achieved. `sweepStats()` still records the achieved number rather
+ * than assuming it.
  */
 export class BookPoller {
   private readonly prev = new Map<string, BookSnapshot>();
@@ -123,7 +179,7 @@ export class BookPoller {
   constructor(
     private readonly markets: readonly TrackedMarket[],
     private readonly deps: BookPollerDeps,
-    private readonly fetch: RawBookFetcher = fetchBookOverHttp,
+    private readonly fetchBatch: RawBookBatchFetcher = fetchBooksOverHttp,
   ) {}
 
   start(intervalMs = BOOK_POLL_MS): void {
@@ -138,14 +194,35 @@ export class BookPoller {
     this.timer = null;
   }
 
-  /** One full pass over every tracked market, awaited. */
+  /**
+   * One full pass over every tracked market, awaited.
+   *
+   * A single batched request supplies every market, then each market is processed
+   * on its own. A market absent from the response is reported through `onError`
+   * for that market alone, so one omitted token costs one market's snapshot and
+   * not the whole sweep. If the request itself fails, every market is reported —
+   * which is the same per-market surfacing a sequential sweep produced, minus the
+   * 30 requests that used to be needed to discover it.
+   */
   async pollAll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
     const startedAt = Date.now();
     try {
+      let bodies: RawBooksByCondition;
+      try {
+        bodies = await this.fetchBatch(this.markets);
+      } catch (err) {
+        for (const market of this.markets) this.deps.onError(market, err);
+        return;
+      }
       for (const market of this.markets) {
-        await this.pollOne(market);
+        const body = bodies.get(market.conditionId);
+        if (body === undefined) {
+          this.deps.onError(market, new MalformedBookError('omitted from the multi-book response'));
+          continue;
+        }
+        this.ingest(market, body);
       }
     } finally {
       this.polling = false;
@@ -198,32 +275,23 @@ export class BookPoller {
     this.deps.onError(market, new MalformedBookError(reason));
   }
 
-  private async pollOne(market: TrackedMarket): Promise<void> {
-    let parsed: ParsedBook;
-    try {
-      parsed = await this.fetchBook(market);
-    } catch (err) {
-      this.deps.onError(market, err);
-      return;
-    }
+  /** Parse, report and diff ONE already-fetched body. Synchronous by design: nothing here awaits. */
+  private ingest(market: TrackedMarket, body: unknown): void {
+    const parsed = parseBook(body, market);
     if (!parsed.ok) {
       this.reportMalformed(market, parsed.reason);
       return;
     }
-    const book = parsed.book;
+    const snap = parsed.book;
     // A book parsed, so any earlier failure for this condition is over. Clearing
     // here — and only here — is what makes a later failure reportable again.
     this.reportedMalformed.delete(market.conditionId);
 
     const prev = this.prev.get(market.conditionId);
-    this.prev.set(market.conditionId, book);
-    this.deps.onBook(book);
+    this.prev.set(market.conditionId, snap);
+    this.deps.onBook(snap);
     if (prev !== undefined) {
-      for (const touch of detectTouches(prev, book)) this.deps.onTouch(touch);
+      for (const touch of detectTouches(prev, snap)) this.deps.onTouch(touch);
     }
-  }
-
-  private async fetchBook(market: TrackedMarket): Promise<ParsedBook> {
-    return parseBook(await this.fetch(market), market);
   }
 }

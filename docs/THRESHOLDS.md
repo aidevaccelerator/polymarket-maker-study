@@ -216,7 +216,7 @@ were moved into `src/shared/` on 2026-10-07.
 | `MIN_LIQUIDITY_USD` | `25_000` | Best-effort USD liquidity gate (notional at the best level). |
 | `MIN_SPREAD_TICKS` | `1` | Universe filter on quoted spread. |
 | `ALLOWED_CATEGORIES` | Politics, Finance, Economics | Categories the collector records. |
-| `BOOK_POLL_MS` / `TOB_POLL_MS` | `5_000` / `1_000` | Nominal polling INTERVALS, not achieved cadence. `TOB_POLL_MS` is a timer over an in-memory map, so 1s is achieved. `BOOK_POLL_MS` is only the delay between full-book sweep ATTEMPTS: the sweep is sequential, so the achieved cadence is `max(BOOK_POLL_MS, markets × per-request latency)` and a tick landing mid-sweep is dropped. The observed value is recorded in `manifest.json` as `bookSweep`. |
+| `BOOK_POLL_MS` / `TOB_POLL_MS` | `5_000` / `1_000` | Nominal polling INTERVALS, not achieved cadence. `TOB_POLL_MS` is a timer over an in-memory map, so 1s is achieved. `BOOK_POLL_MS` is only the delay between full-book sweep ATTEMPTS: a sweep is ONE `POST /books` request covering every tracked market, so its cost does not grow with market count and the achieved cadence is `max(BOOK_POLL_MS, one-batch latency)`; a tick landing mid-sweep is dropped. Measured 446ms mean / 1268ms max over 30 markets. The observed value is recorded in `manifest.json` as `bookSweep`. See amendment log. |
 | Fee / rebate schedule | `src/shared/fees.ts` | Per-trade costs and maker rebates, transcribed from <https://docs.polymarket.com/trading/fees> (retrieved 2026-10-07). |
 
 This table and `src/shared/config.ts` were reconciled line by line on 2026-10-07. Both
@@ -288,3 +288,39 @@ entrypoints (`src/collector/index.ts`, `src/analysis/index.ts`) exist and build.
   is a correction to a claim about the repository's own provenance. Recorded rather than
   quietly applied, on the same footing as the entries above: made after the document was
   drafted but before any data existed. No data has been collected or viewed.
+- **2026-10-07 — Full-book sweep batched: cadence formula corrected. Disclosed after
+  data collection had already started.** `BookPoller.pollAll` now fetches every tracked
+  market through ONE `POST /clob.polymarket.com/books` request instead of one sequential
+  `GET /book` per market. The constant table above previously stated the achieved cadence
+  as `max(BOOK_POLL_MS, markets × per-request latency)`; that formula is **withdrawn** and
+  replaced with `max(BOOK_POLL_MS, one-batch latency)`. Measured over a 260s run at 30
+  markets: 45 sweeps, mean 446ms, max 1268ms, 30/30 markets per sweep, zero errors —
+  against 10-50s per sweep before. `BOOK_POLL_MS = 5_000` itself is **unchanged**; what
+  changed is that the interval, not the sweep, is now the binding term, so the documented
+  5s cadence is actually achieved for the first time.
+
+  **Why this is disclosed rather than applied silently.** Two reasons, and the second is
+  the serious one. First, it corrects a factual claim about collection mechanics in a
+  document whose whole purpose is to fix such claims before data is seen. Second, and
+  explicitly: this amendment was made **after** collection had already run. The batches
+  above are therefore not a pristine pre-data correction — they were gathered while the
+  pre-batch collector was live, and a reader should treat that fact as a limitation on the
+  cleanliness of the provenance, not as a licence to do the same again.
+
+  **No threshold value changed.** The primary threshold, `OUR_ORDER_SIZE`,
+  `MIN_FILLS_FOR_VERDICT`, `MARGINAL_LOWER_BOUND_CENTS`, `CANONICAL_HORIZON_MS`, the
+  verdict rules, and the weighted-p50 statistic are all untouched. What did change is the
+  density of the depth context those rules read: inferred touch sizes are now computed from
+  consecutive snapshots far closer together, which if anything makes them *less* coarse.
+  The lower-bound caveats in `src/analysis/ASSUMPTIONS.md` §12 and §11 — an add at the
+  touched level is indistinguishable from a fill, and a cancellation is indistinguishable
+  from a fill — are unchanged and remain the binding limitations on any fill inferred
+  from this data.
+
+  **A separate, still-open problem is NOT addressed by this amendment.** Batching did not
+  produce fills. A live run recorded `touch: 0` across 1,320 consecutive book pairs, and a
+  30-second WebSocket sample produced 25 `price_changes` events (all carrying an explicit
+  `size`) with zero best-price moves. `detectTouches` fires only on a best-level price
+  move, so the fill model — not the cadence — is what currently yields no fill sample, and
+  `MIN_FILLS_FOR_VERDICT = 100` is not currently reachable. What counts as a fill is a
+  pre-registration question and is deliberately **not** answered by this entry.
