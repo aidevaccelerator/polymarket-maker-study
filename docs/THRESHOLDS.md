@@ -353,3 +353,36 @@ entrypoints (`src/collector/index.ts`, `src/analysis/index.ts`) exist and build.
   against the deliberately pessimistic stance in `src/collector/trades.ts`; counting none
   produces no sample. Recording the raw change feed was preferred to guessing, so that the
   choice is made in analysis against measured data. See `src/analysis/ASSUMPTIONS.md` §13.
+
+- **2026-10-08 — Touch-level USD liquidity filter REMOVED. Disclosed as post-hoc.**
+  The analysis half previously required `MIN_LIQUIDITY_USD` (25,000) of depth **at the
+  touch** — `price x size` of the single best level on the consumed side. Measured over 48
+  observed touches, it admitted **0 of 48**. It was removed rather than re-derived, because a
+  filter that excludes every event it sees cannot be performing the job it was written for.
+
+  **Why it was structurally wrong, not merely badly tuned.** `MIN_LIQUIDITY_USD` is a
+  *market-level* quantity, and the collector already applies it once at *discovery*, via
+  Gamma's `liquidity_num_min`. Re-applying the same number at the touch compares two
+  different quantities: touches occur in books roughly **18x thinner** than average (top-10
+  cumulative depth, p50 **$1,819** at the touch versus **$32,539** across all snapshots).
+  Market-level screening now lives in exactly one place, `discoverUniverse`.
+
+  **Cumulative top-N depth was measured as the alternative and does not rescue the bar:**
+  at the touch, the count passing $25,000 was 0/48 at N=1, 8/48 at N=5 and 10/48 at N=10.
+  Widening the measure did not make the threshold reachable, so changing the measure was
+  rejected in favour of removing the misapplied check.
+
+  **This amendment was decided AFTER data was seen, and that is a real cost to the
+  result's integrity.** The evidence above comes from the same run that motivated the
+  change; no independent sample was used, and none was available. A reader should treat the
+  in-scope population as "whatever discovery admits", which is wider than the pre-registered
+  intent of "markets with >= $25,000 of touch-level liquidity" — an intent that, as measured,
+  was unsatisfiable. The price filter `[MIN_PROB, MAX_PROB]` is unchanged, as is every
+  threshold, verdict rule, constant and statistic.
+
+  **First end-to-end execution.** With the filter removed, `npm run analyze` completed on
+  real collected data for the first time in this project's history and emitted a report with
+  verdict `INSUFFICIENT_DATA` — 106,380 book snapshots, 531,810 top-of-book rows, 27 in-scope
+  touches, median-model p50 **+0.50c** at the 30s horizon, and **0 pessimistic fills** against
+  a floor of 100. `INSUFFICIENT_DATA` is the correct verdict for that input and confirms the
+  guard works. The remaining blocker is the pessimistic queue model, not the market filter.

@@ -136,12 +136,23 @@ async function main(): Promise<void> {
     },
   );
 
+  // Rate-limited for the same reason BookPoller.reportMalformed is: a permanently
+  // malformed feed would otherwise write ~120 lines/second and bury the durable
+  // audit log under one repeating message. Verified necessary — a wrong validator
+  // on this channel produced a 209 MB gap log in a single 5h run before the
+  // throttle existed. Reports the first N per run, then a single summary on exit.
+  let unparsedTotal = 0;
   const clobWs = new ClobPriceWs(
     markets.map((m) => ({ conditionId: m.conditionId, tokenId: m.tokenId })),
     {
       onChange: (c) => writer.writeChange(c),
       onUnparsed: () => {
-        gapLog.logError('clob ws: unparsed price_change entry');
+        unparsedTotal += 1;
+        if (unparsedTotal <= 5) {
+          gapLog.logError('clob ws: unparsed price_change entry', {
+            context: { seen: unparsedTotal },
+          });
+        }
       },
     },
   );
@@ -191,6 +202,11 @@ async function main(): Promise<void> {
     bookPoller.stop();
     ws.close();
     clobWs.close();
+    if (unparsedTotal > 5) {
+      gapLog.logError('clob ws: unparsed price_change entries (total)', {
+        context: { total: unparsedTotal, logged: 5 },
+      });
+    }
     try {
       writer.flush();
     } catch (err) {

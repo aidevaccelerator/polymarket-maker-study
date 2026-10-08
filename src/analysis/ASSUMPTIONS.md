@@ -272,7 +272,7 @@ node scripts/run-tests.mjs dist/analysis
 Output goes to the same `dist/` tree, so `npm run analyze` works unchanged.
 
 **Note on scope:** `npm test` runs **only** the shared + collector tests (10 files,
-126 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
+129 tests). It does **not** touch this half. Only `npm run test:all` (19 files, 172
 tests) executes `src/analysis`. Any statement implying `npm test` covers the
 analysis half is wrong.
 
@@ -298,8 +298,8 @@ programs are now built with `tsc -b` and `incremental` has been removed from
   build first, so tests cannot run against a missing build. Previously
   `rm -rf dist && npm test` printed "tests 0 / pass 0 / fail 0" and exited 0.
 
-Current per-file counts: shared + collector 126 across 11 files; analysis 62 across
-9 files; total 188 across 20 files.
+Current per-file counts: shared + collector 129 across 11 files; analysis 62 across
+9 files; total 191 across 20 files.
 
 **UPDATE 2026-10-07 — universe discovery is now covered offline.** The collector's
 universe-discovery path — market parsing, category resolution from parent-event

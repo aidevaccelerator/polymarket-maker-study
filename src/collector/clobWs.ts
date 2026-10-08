@@ -22,7 +22,7 @@
 
 import WebSocket from 'ws';
 import type { RawData } from 'ws';
-import { asPrice, asString, isRecord } from '../shared/parse.js';
+import { asPrice, asSize, asString, isRecord } from '../shared/parse.js';
 import { normalizeTs, nowIso } from '../shared/time.js';
 import type { PriceChange } from '../shared/schema.js';
 
@@ -78,7 +78,11 @@ export function parsePriceChanges(
     }
     const assetId = asString(entry['asset_id']);
     const price = asPrice(entry['price']);
-    const size = asPrice(entry['size']);
+    // asSize, NOT asPrice. asPrice rejects anything > 1 because it validates a
+    // probability; a size of 11845 is a perfectly valid size and asPrice called
+    // it unparseable. That bug reported ~2.19M unparsed entries into the gap log
+    // in a single 5h run before it was found.
+    const size = asSize(entry['size']);
     const side = asString(entry['side']);
     if (
       assetId === null ||

@@ -103,3 +103,38 @@ describe('parsePriceChanges', () => {
     assert.equal(changes[0]?.size, 0);
   });
 });
+describe('parsePriceChanges size handling', () => {
+  // Regression: this used asPrice, which rejects any value > 1 because it
+  // validates a probability. Sizes above 1 were reported unparseable, which
+  // wrote ~2.19M gap-log lines in a 5h run before it was caught.
+  it('accepts a size far above 1', () => {
+    const { changes, unparsed } = parsePriceChanges(
+      { ...FRAME, price_changes: [{ ...FRAME.price_changes[0], size: '11845.16' }] },
+      TOKENS,
+      TS,
+    );
+    assert.equal(unparsed, 0);
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0]?.size, 11845.16);
+  });
+
+  it('still rejects a negative size', () => {
+    const { changes, unparsed } = parsePriceChanges(
+      { ...FRAME, price_changes: [{ ...FRAME.price_changes[0], size: '-1' }] },
+      TOKENS,
+      TS,
+    );
+    assert.equal(unparsed, 1);
+    assert.equal(changes.length, 0);
+  });
+
+  it('still rejects a price above 1, which asPrice exists to catch', () => {
+    const { changes, unparsed } = parsePriceChanges(
+      { ...FRAME, price_changes: [{ ...FRAME.price_changes[0], price: '1.4' }] },
+      TOKENS,
+      TS,
+    );
+    assert.equal(unparsed, 1);
+    assert.equal(changes.length, 0);
+  });
+});

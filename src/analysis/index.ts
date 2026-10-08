@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { MAX_PROB, MIN_LIQUIDITY_USD, MIN_PROB, OUR_ORDER_SIZE } from '../shared/config.js';
+import { MAX_PROB, MIN_PROB, OUR_ORDER_SIZE } from '../shared/config.js';
 import { computeFillRates } from './fillRate.js';
 import {
   buildMidSeries,
@@ -259,28 +259,22 @@ async function main(): Promise<void> {
     return tsMs >= fromMs && tsMs <= toMs;
   });
 
-  // Pre-registered market filters (constants from config, used as-is):
-  //   - price must lie in [MIN_PROB, MAX_PROB]
-  //   - best-effort USD liquidity at the touch level must be >= MIN_LIQUIDITY_USD
+  // Pre-registered market filter: price must lie in [MIN_PROB, MAX_PROB].
   // Counted and reported so filtering is never silent.
-  const marketFilterExcluded = { price: 0, liquidity: 0, liquidityUnmeasured: 0 };
+  //
+  // REMOVED 2026-10-08: the touch-level USD liquidity check. It required
+  // MIN_LIQUIDITY_USD (25,000) of depth AT THE TOUCH, a different quantity from
+  // the market-level liquidity the collector already screens on in discovery
+  // (`liquidity_num_min`), and it admitted 0 of 48 observed touches -- a filter
+  // that excludes everything cannot be doing the job it was written for. Touches
+  // occur in books ~18x thinner than average (N=10 depth: p50 $1,819 at the touch
+  // vs $32,539 across all snapshots), so the same number cannot mean the same
+  // thing in both places. Market-level screening stays where it belongs, in
+  // discovery, and is applied exactly once. See docs/THRESHOLDS.md amendment log.
+  const marketFilterExcluded = { price: 0 };
   const touchesInScope = touches.filter((t) => {
     if (t.price < MIN_PROB || t.price > MAX_PROB) {
       marketFilterExcluded.price += 1;
-      return false;
-    }
-    const book = bookLookup(t.bookTs);
-    if (book === undefined) {
-      marketFilterExcluded.liquidityUnmeasured += 1; // keep: cannot measure, do not over-filter
-      return true;
-    }
-    const levels = t.side === 'BUY' ? book.asks : book.bids;
-    const best = levels[0];
-    const bestPrice = best?.[0] ?? 0;
-    const bestSize = best?.[1] ?? 0;
-    const liquidityUsd = bestPrice * bestSize;
-    if (liquidityUsd < MIN_LIQUIDITY_USD) {
-      marketFilterExcluded.liquidity += 1;
       return false;
     }
     return true;
@@ -345,23 +339,12 @@ async function main(): Promise<void> {
       `${marketFilterExcluded.price} touches excluded by the price filter [${MIN_PROB}, ${MAX_PROB}].`,
     );
   }
-  if (marketFilterExcluded.liquidity > 0) {
-    coverage.warnings.push(
-      `${marketFilterExcluded.liquidity} touches excluded by the liquidity filter (< ${MIN_LIQUIDITY_USD} USD).`,
-    );
-  }
-  if (marketFilterExcluded.liquidityUnmeasured > 0) {
-    coverage.warnings.push(
-      `${marketFilterExcluded.liquidityUnmeasured} touches had no book snapshot to measure liquidity; kept (never over-filter).`,
-    );
-  }
   if (unparseableTouchTs > 0) {
     coverage.warnings.push(
       `${unparseableTouchTs} touches had an unparseable timestamp and were dropped.`,
     );
   }
-  const excludedTotal =
-    marketFilterExcluded.price + marketFilterExcluded.liquidity;
+  const excludedTotal = marketFilterExcluded.price;
   if (touches.length > 0 && excludedTotal > touches.length * 0.5) {
     coverage.warnings.push(
       `market filters removed ${excludedTotal} of ${touches.length + excludedTotal} in-window touches (>50%); the surviving sample may not represent the pre-registered universe.`,
