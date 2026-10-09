@@ -1,0 +1,30 @@
+candidates passing: 6  selected: 3
+  mid0.707 spr7.0c  Palermo: Michele Ribecai vs Jonas Forejtek
+  mid0.832 spr4.8c  Counter-Strike: FURIA vs MOUZ - Map 1 Winner
+  mid0.126 spr4.0c  Dota 2: 1win vs PARIVISION - Game 1 Winner
+
+subscribed to 3 markets; capturing 660 s
+
+fills captured: 737   (resolved ts: 737 )
+
+=== ADVERSE DRIFT per market (markout + halfspread), positive = price moved WITH the maker ===
+
+Palermo: Michele Ribecai vs Jonas Forejtek
+    +1s               n=118  mean=0.827c  p10=-0.00c  p50=1.00c  p90=2.00c
+    +5s               n=118  mean=0.958c  p10=-0.00c  p50=0.50c  p90=4.00c
+    +30s              n=101  mean=2.817c  p10=-3.50c  p50=1.00c  p90=13.00c
+
+Counter-Strike: FURIA vs MOUZ - Map 1 Winner
+    +1s               n=400  mean=-0.248c  p10=-3.00c  p50=0.00c  p90=1.00c
+    +5s               n=398  mean=-0.380c  p10=-3.50c  p50=0.00c  p90=2.00c
+    +30s              n=387  mean=-3.537c  p10=-16.50c  p50=0.00c  p90=4.00c
+
+Dota 2: 1win vs PARIVISION - Game 1 Winner
+    +1s               n=201  mean=1.064c  p10=-2.00c  p50=0.50c  p90=6.00c
+    +5s               n=148  mean=0.736c  p10=-6.00c  p50=1.00c  p90=9.00c
+    +30s              n= 56  mean=-4.882c  p10=-12.50c  p50=-3.50c  p90=3.53c
+
+=== AGGREGATE ADVERSE DRIFT across markets ===
+    +1s               n=719  mean=0.295c  p10=-2.50c  p50=0.00c  p90=2.50c
+    +5s               n=664  mean=0.107c  p10=-4.00c  p50=0.00c  p90=3.50c
+    +30s              n=544  mean=-2.496c  p10=-15.00c  p50=0.00c  p90=5.00c

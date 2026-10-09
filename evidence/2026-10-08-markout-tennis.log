@@ -1,0 +1,24 @@
+candidates passing: 2  selected: 2
+  mid0.479 spr2.0c  Braga: Lukas Neumayer vs Max Alcala Gurri
+  mid0.380 spr2.0c  Braga: Vilius Gaubas vs Luka Mikrut
+
+subscribed to 2 markets; capturing 600 s
+
+fills captured: 343   (resolved ts: 343 )
+
+=== ADVERSE DRIFT per market (markout + halfspread), positive = price moved WITH the maker ===
+
+Braga: Lukas Neumayer vs Max Alcala Gurri
+    +1s               n=138  mean=0.194c  p10=-2.00c  p50=0.00c  p90=2.00c
+    +5s               n=138  mean=0.194c  p10=-1.50c  p50=0.00c  p90=1.50c
+    +30s              n=130  mean=0.687c  p10=-4.50c  p50=0.00c  p90=7.00c
+
+Braga: Vilius Gaubas vs Luka Mikrut
+    +1s               n=205  mean=0.331c  p10=-0.00c  p50=0.00c  p90=1.00c
+    +5s               n=205  mean=0.375c  p10=-0.50c  p50=0.00c  p90=1.00c
+    +30s              n=203  mean=0.795c  p10=-4.00c  p50=0.00c  p90=5.00c
+
+=== AGGREGATE ADVERSE DRIFT across markets ===
+    +1s               n=343  mean=0.276c  p10=-0.50c  p50=0.00c  p90=1.05c
+    +5s               n=343  mean=0.302c  p10=-0.50c  p50=0.00c  p90=1.50c
+    +30s              n=333  mean=0.753c  p10=-4.00c  p50=0.00c  p90=6.00c
