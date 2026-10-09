@@ -3,6 +3,11 @@ const RPC='https://polygon-drpc.org'.replace('polygon-drpc','polygon-drp');
 const RPCU='https://polygon.drpc.org';
 const EX=['0xe111180000d2663c0091e4f400237545b87b996b','0xe2222d279d744050d28e00520010520000310f59'];
 const OF='0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee';
+const VENUE=t=>/Up or Down/i.test(t)?'crypto-binary'
+  :/tennis|wta|atp|challenger/i.test(t)?'tennis'
+  :/Counter-Strike|CS2|ESL/i.test(t)?'counter-strike'
+  :/Dota|League of Legends|LoL|Valorant/i.test(t)?'esports-other'
+  :/ vs\.? | Vs\.? /i.test(t)?'sports-other':'other';
 const N=Number(process.argv[2]??5), DUR=Number(process.argv[3]??600);
 async function rpc(m,p){
   const r=await fetch(RPCU,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:m,params:p})});
@@ -12,7 +17,8 @@ async function rpc(m,p){
   return j.result; }
 
 const tok=new Map();
-for(let i=0;i<25;i++){ try{ const j=await (await fetch('https://data-api.polymarket.com/v2/trades?limit=200')).json();
+const SAMP=Number(process.env.SAMPLES??25);
+for(let i=0;i<SAMP;i++){ try{ const j=await (await fetch('https://data-api.polymarket.com/v2/trades?limit=200')).json();
   for(const t of (j.data??[])){ const k=String(t.token_id); if(!tok.has(k))tok.set(k,{p:new Set(),n:0,title:t.title??''});
     const r=tok.get(k); r.n++; r.p.add(Number(t.price).toFixed(4)); } }catch{}
   await new Promise(x=>setTimeout(x,800)); }
@@ -21,6 +27,8 @@ for(const [id,r] of tok){ const p=[...r.p].map(Number); const mean=p.reduce((a,b
   const spread=Math.max(...p)-Math.min(...p);
   const sd=/(\d{1,2}):(\d{2})(AM|PM)\s*-\s*(\d{1,2}):(\d{2})(AM|PM)/i.test(r.title);
   if(spread<0.005||mean<0.08||mean>0.92||sd||r.p.size<3) continue;
+  // Venue focus: MATCH_ONLY=1 restricts to tennis, which is where the drift
+  // was positive; 0 runs the unrestricted population.
   cands.push({id,title:r.title,n:r.n,mean,spread,score:r.n/10+spread*20}); }
 cands.sort((a,b)=>b.score-a.score);
 // DIVERSIFY. Taking the top-N by score returned two corners of the SAME tennis
@@ -97,5 +105,17 @@ for(const c of pick){ const fs=byM.get(c.id)??[]; if(!fs.length){console.log('\n
       const mark = f.side==='BUY' ? (fp-qF.mid)*100 : (qF.mid-fp)*100;
       v.push(mark + q0.half*100); }
     fmt('+' + HZ + 's',v); agg[HZ].push(...v); } }
+console.log('\n=== BY VENUE TYPE, +30s ===');
+const byV={};
+for(const c of pick){ const fs=byM.get(c.id)??[]; const v=VENUE(c.title);
+  if(!byV[v])byV[v]=[]; byV[v].push({c,fs}); }
+for(const [v,list] of Object.entries(byV)){
+  const all=[];
+  for(const {c,fs} of list){ const mid=mids.get(c.id)??[];
+    for(const f of fs){ const q0=quoteAt(mid,f.tsMs),qF=quoteAt(mid,f.tsMs+30000); if(!q0||!qF)continue;
+      const fp=f.usd/f.sh; if(!Number.isFinite(fp)||fp<=0)continue;
+      all.push((f.side==='BUY'?(fp-qF.mid):(qF.mid-fp))*100 + q0.half*100); } }
+  if(all.length) fmt(v+' (n='+all.length+')',all);
+  else console.log('  '+v.padEnd(22)+'n=0'); }
 console.log('\n=== AGGREGATE ADVERSE DRIFT across markets ===');
 for(const HZ of [1,5,30]) fmt('+' + HZ + 's',agg[HZ]);
